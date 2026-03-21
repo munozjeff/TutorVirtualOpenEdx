@@ -40,7 +40,6 @@ export default function Header({ userInfo, config, onTabChange, activeTab, onCle
                 <nav className="tab-bar">
                     <button className={`tab-btn ${activeTab === 'chat' ? 'active' : ''}`} onClick={() => onTabChange('chat')}>💬 Chat</button>
                     <button className={`tab-btn ${activeTab === 'config' ? 'active' : ''}`} onClick={() => onTabChange('config')}>⚙️ Configuración</button>
-                    <button className={`tab-btn ${activeTab === 'admin' ? 'active' : ''}`} onClick={() => onTabChange('admin')}>🔗 Registrar Bloques</button>
                 </nav>
             )}
         </>

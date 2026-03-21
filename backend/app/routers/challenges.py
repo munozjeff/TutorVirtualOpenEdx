@@ -67,11 +67,20 @@ class AttemptOut(BaseModel):
     attempts_count: int
 
 
+class SiblingPendingOut(BaseModel):
+    challenge_id: str
+    title: str
+    question: str
+    block_name: str
+    attempts_count: int
+
+
 class ChallengeStatusOut(BaseModel):
     challenges: List[ChallengeOut]
     attempts: List[AttemptOut]
     current_challenge_id: Optional[str]   # first pending, None if all passed
     all_passed: bool
+    sibling_pending: List[SiblingPendingOut] = []   # pending challenges from shared-group sibling blocks
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -127,26 +136,52 @@ async def generate_challenges(
     db: AsyncSession = Depends(get_db),
 ):
     from app.services.ai_service import get_ai_provider
+    from app.services.rag_service import retrieve_context
 
     count = max(1, min(body.count, 5))
     provider = get_ai_provider()
+
+    # If RAG mode, retrieve relevant document context to base questions on real content
+    rag_context = ""
+    inst_res = await db.execute(select(LtiInstance).where(LtiInstance.id == session.instance_id))
+    inst = inst_res.scalars().first()
+    if inst and inst.mode == "rag":
+        rag_context = await retrieve_context(db, body.topic, inst.context_id, top_k=8)
 
     system = (
         "Eres un experto en diseño de actividades educativas. "
         "Genera desafíos pedagógicos en español en formato JSON exacto."
     )
-    user_msg = (
-        f"Genera {count} desafío(s) educativo(s) sobre el tema: '{body.topic}'. "
-        f"Dificultad: {body.difficulty}.\n\n"
-        "Responde ÚNICAMENTE con un array JSON con este formato exacto (sin markdown, sin explicaciones):\n"
-        '[\n'
-        '  {\n'
-        '    "title": "Título corto del desafío",\n'
-        '    "question": "Pregunta completa que se le hará al estudiante",\n'
-        '    "answer_guide": "Criterios para evaluar si la respuesta es correcta (para uso interno)"\n'
-        '  }\n'
-        ']\n'
-    )
+
+    if rag_context:
+        user_msg = (
+            f"Genera {count} desafío(s) educativo(s) de dificultad '{body.difficulty}' "
+            f"sobre el tema: '{body.topic}'.\n\n"
+            "IMPORTANTE: Las preguntas deben basarse EXCLUSIVAMENTE en el siguiente contenido "
+            "extraído de los documentos del curso. No inventes información que no esté en el texto.\n\n"
+            f"[CONTENIDO DEL CURSO]:\n{rag_context}\n\n"
+            "Responde ÚNICAMENTE con un array JSON con este formato exacto (sin markdown, sin explicaciones):\n"
+            '[\n'
+            '  {\n'
+            '    "title": "Título corto del desafío",\n'
+            '    "question": "Pregunta completa basada en el contenido anterior",\n'
+            '    "answer_guide": "Criterios para evaluar si la respuesta es correcta, basados en el contenido"\n'
+            '  }\n'
+            ']\n'
+        )
+    else:
+        user_msg = (
+            f"Genera {count} desafío(s) educativo(s) sobre el tema: '{body.topic}'. "
+            f"Dificultad: {body.difficulty}.\n\n"
+            "Responde ÚNICAMENTE con un array JSON con este formato exacto (sin markdown, sin explicaciones):\n"
+            '[\n'
+            '  {\n'
+            '    "title": "Título corto del desafío",\n'
+            '    "question": "Pregunta completa que se le hará al estudiante",\n'
+            '    "answer_guide": "Criterios para evaluar si la respuesta es correcta (para uso interno)"\n'
+            '  }\n'
+            ']\n'
+        )
 
     try:
         raw = await provider.chat(system_prompt=system, history=[], user_message=user_msg)
@@ -233,11 +268,49 @@ async def get_challenge_status(
     )
     all_passed = current is None
 
+    # ── Sibling pending challenges (shared group) ──────────────────────────────
+    sibling_pending: list[SiblingPendingOut] = []
+
+    inst_res = await db.execute(select(LtiInstance).where(LtiInstance.id == session.instance_id))
+    inst = inst_res.scalars().first()
+
+    if inst and inst.share_context and inst.share_group_id:
+        siblings_res = await db.execute(
+            select(LtiInstance).where(
+                LtiInstance.context_id == inst.context_id,
+                LtiInstance.share_group_id == inst.share_group_id,
+                LtiInstance.id != inst.id,
+            )
+        )
+        for sib in siblings_res.scalars().all():
+            sib_challs_res = await db.execute(
+                select(Challenge)
+                .where(Challenge.instance_id == sib.id)
+                .order_by(Challenge.order)
+            )
+            for sc in sib_challs_res.scalars().all():
+                att_res = await db.execute(
+                    select(ChallengeAttempt).where(
+                        ChallengeAttempt.challenge_id == sc.id,
+                        ChallengeAttempt.user_id == session.user_id,
+                    )
+                )
+                att = att_res.scalars().first()
+                if not att or att.status != "passed":
+                    sibling_pending.append(SiblingPendingOut(
+                        challenge_id=sc.id,
+                        title=sc.title or "",
+                        question=sc.question,
+                        block_name=sib.tutor_name or sib.topic or "Bloque anterior",
+                        attempts_count=att.attempts_count if att else 0,
+                    ))
+
     return ChallengeStatusOut(
         challenges=[_out(c) for c in challenges],
         attempts=attempt_outs,
         current_challenge_id=current,
         all_passed=all_passed,
+        sibling_pending=sibling_pending,
     )
 
 

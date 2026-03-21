@@ -1,6 +1,5 @@
 import { useState } from 'react'
 import Header from './components/Header'
-import ChatWindow from './components/ChatWindow'
 import StudentView from './views/StudentView'
 import InstructorView from './views/InstructorView'
 import RegistrationPanel from './views/RegistrationPanel'
@@ -83,8 +82,6 @@ export default function App() {
                     onConfigUpdate={setConfig}
                     onClearHistory={clearHistory}
                 />
-            ) : isInstructor && activeTab === 'admin' ? (
-                <RegistrationPanel />
             ) : (
                 <StudentView
                     messages={messages}

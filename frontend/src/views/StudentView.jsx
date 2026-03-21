@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import ChatWindow from '../components/ChatWindow'
 import { challengesApi } from '../api/client'
 
-export default function StudentView({ messages, isLoading, error, onSend, userInfo, config, onClearHistory }) {
+export default function StudentView({ messages, isLoading, error, onSend }) {
     const [challengeStatus, setChallengeStatus] = useState(null)
 
     const loadStatus = async () => {
@@ -34,18 +34,58 @@ export default function StudentView({ messages, isLoading, error, onSend, userIn
         ? challengeStatus.attempts.filter(a => a.status === 'passed').length
         : 0
     const totalCount = hasChallenges ? challengeStatus.challenges.length : 0
+    const siblingPending = challengeStatus?.sibling_pending || []
+    const hasSiblingPending = siblingPending.length > 0
 
     return (
         <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
 
-            {/* ── Challenge banner ─────────────────────────────────────────── */}
+            {/* ── Sibling pending challenges banner ────────────────────────── */}
+            {hasSiblingPending && (
+                <div style={{
+                    padding: '10px 16px',
+                    background: '#fff3cd',
+                    borderBottom: '2px solid #f0a500',
+                    flexShrink: 0,
+                }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                        <span style={{ fontSize: 16 }}>⚠️</span>
+                        <span style={{ fontSize: 12, fontWeight: 700, color: '#7c4f00', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                            Tienes {siblingPending.length} desafío{siblingPending.length > 1 ? 's' : ''} pendiente{siblingPending.length > 1 ? 's' : ''} de completar
+                        </span>
+                    </div>
+                    {siblingPending.map((sp, i) => (
+                        <div key={sp.challenge_id} style={{
+                            background: '#fff',
+                            borderRadius: 4,
+                            padding: '7px 11px',
+                            border: '1px solid #f0a500',
+                            marginTop: i > 0 ? 6 : 0,
+                        }}>
+                            {sp.title && (
+                                <div style={{ fontSize: 11, fontWeight: 700, color: '#7c4f00', marginBottom: 2, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                                    {sp.title} — {sp.block_name}
+                                </div>
+                            )}
+                            <div style={{ fontSize: 13, color: '#1c1c1c', lineHeight: 1.5 }}>
+                                {sp.question}
+                            </div>
+                            {sp.attempts_count > 0 && (
+                                <div style={{ fontSize: 11, color: '#888', marginTop: 3 }}>
+                                    Intentos anteriores: {sp.attempts_count}
+                                </div>
+                            )}
+                        </div>
+                    ))}
+                </div>
+            )}
+
+            {/* ── Challenge banner (current block) ─────────────────────────── */}
             {hasChallenges && (
                 <div style={{
                     padding: '10px 16px',
-                    background: allPassed
-                        ? 'linear-gradient(135deg, rgba(16,185,129,0.15), rgba(5,150,105,0.1))'
-                        : 'linear-gradient(135deg, rgba(251,191,36,0.12), rgba(245,158,11,0.08))',
-                    borderBottom: `1px solid ${allPassed ? 'rgba(16,185,129,0.25)' : 'rgba(251,191,36,0.25)'}`,
+                    background: allPassed ? '#f0faf4' : '#fff8f8',
+                    borderBottom: `1px solid ${allPassed ? '#86efac' : '#ffd0d0'}`,
                     flexShrink: 0,
                 }}>
                     {/* Progress bar */}
@@ -53,18 +93,18 @@ export default function StudentView({ messages, isLoading, error, onSend, userIn
                         <span style={{ fontSize: 14 }}>{allPassed ? '🎉' : '🏆'}</span>
                         <div style={{ flex: 1 }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
-                                <span style={{ fontSize: 11, fontWeight: 600, color: allPassed ? '#6ee7b7' : '#fcd34d', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                                <span style={{ fontSize: 11, fontWeight: 700, color: allPassed ? '#166534' : '#c00', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
                                     {allPassed ? '¡Todos los desafíos completados!' : `Desafío ${passedCount + 1} de ${totalCount}`}
                                 </span>
-                                <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                                <span style={{ fontSize: 11, color: '#888' }}>
                                     {passedCount}/{totalCount} completados
                                 </span>
                             </div>
-                            <div style={{ height: 4, background: 'rgba(255,255,255,0.1)', borderRadius: 2, overflow: 'hidden' }}>
+                            <div style={{ height: 4, background: '#e5e5e5', borderRadius: 2, overflow: 'hidden' }}>
                                 <div style={{
                                     height: '100%',
                                     width: `${totalCount > 0 ? (passedCount / totalCount) * 100 : 0}%`,
-                                    background: allPassed ? '#10b981' : '#f59e0b',
+                                    background: allPassed ? '#16a34a' : '#c00',
                                     borderRadius: 2, transition: 'width 0.4s ease',
                                 }} />
                             </div>
@@ -74,19 +114,19 @@ export default function StudentView({ messages, isLoading, error, onSend, userIn
                     {/* Current challenge card */}
                     {!allPassed && currentChallenge && (
                         <div style={{
-                            background: 'rgba(0,0,0,0.2)', borderRadius: 6, padding: '8px 12px',
-                            border: '1px solid rgba(251,191,36,0.2)',
+                            background: '#ffffff', borderRadius: 4, padding: '8px 12px',
+                            border: '1px solid #ffd0d0',
                         }}>
                             {currentChallenge.title && (
-                                <div style={{ fontSize: 11, fontWeight: 700, color: '#fcd34d', marginBottom: 3, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                                <div style={{ fontSize: 11, fontWeight: 700, color: '#c00', marginBottom: 3, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
                                     {currentChallenge.title}
                                 </div>
                             )}
-                            <div style={{ fontSize: 13, color: 'var(--text-primary)', lineHeight: 1.5 }}>
+                            <div style={{ fontSize: 13, color: '#1c1c1c', lineHeight: 1.5 }}>
                                 {currentChallenge.question}
                             </div>
                             {currentAttempt && currentAttempt.attempts_count > 0 && (
-                                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                                <div style={{ fontSize: 11, color: '#888', marginTop: 4 }}>
                                     Intentos: {currentAttempt.attempts_count}
                                 </div>
                             )}
@@ -96,7 +136,7 @@ export default function StudentView({ messages, isLoading, error, onSend, userIn
             )}
 
             {/* ── Chat ─────────────────────────────────────────────────────── */}
-            <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+            <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
                 <ChatWindow
                     messages={messages}
                     isLoading={isLoading}
