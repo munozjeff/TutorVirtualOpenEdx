@@ -157,11 +157,14 @@ async def lti_login(
         client_id[:16], registration.auth_endpoint, params["redirect_uri"],
     )
 
-    # ── Iframe breakout via form target="_top" ───────────────────────────────
-    # window.top.location.href is blocked by Firefox/Chrome when the iframe is
-    # cross-origin without user activation. A form submission with target="_top"
-    # IS permitted by browsers and is the IMS-recommended approach for LTI 1.3
-    # OIDC initiation inside iframes.
+    # ── OIDC redirect stays inside the iframe ────────────────────────────────
+    # Do NOT use target="_top". The entire OIDC flow (login → Open edX auth →
+    # launch → frontend) runs within the iframe. Firefox blocks cross-origin
+    # top-level navigation from iframes even with allow-top-navigation sandbox.
+    # Staying in the iframe works because:
+    #   - Open edX session cookies are same-site (top frame = local.openedx.io,
+    #     request goes to local.openedx.io) → SameSite=Lax cookies are sent.
+    #   - Our session cookie uses SameSite=None; Secure → works cross-origin.
     auth_endpoint = registration.auth_endpoint
 
     def _input(name: str, value: str) -> str:
@@ -173,7 +176,7 @@ async def lti_login(
     html = f"""<!DOCTYPE html>
 <html><head><title>LTI Login</title></head>
 <body>
-<form id="f" method="GET" action="{auth_endpoint}" target="_top">
+<form id="f" method="GET" action="{auth_endpoint}">
 {hidden_inputs}
 </form>
 <script>document.getElementById('f').submit();</script>
