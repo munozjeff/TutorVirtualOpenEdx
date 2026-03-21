@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # =============================================================================
 #  setup.sh — LTI Virtual Tutor · Configuración y arranque automático
-#  Instala dependencias, genera certificados SSL locales (mkcert),
-#  configura .env, nginx y lanza todos los servicios.
+#
+#  Modos disponibles:
+#   1) HTTPS local (mkcert) — desarrollo/pruebas, dominio personalizado
+#   2) HTTP mismo dominio   — testing HTTP simple, mismo dominio que Open edX
+#   3) HTTPS producción     — certificado SSL real (Let's Encrypt, etc.)
 # =============================================================================
 set -e
 
-# ── Colores ───────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 
@@ -24,10 +26,9 @@ step() { echo -e "\n${BOLD}${GREEN}▶ $1${NC}"; }
 info() { echo -e "  ${CYAN}ℹ  $1${NC}"; }
 warn() { echo -e "  ${YELLOW}⚠  $1${NC}"; }
 ok()   { echo -e "  ${GREEN}✔  $1${NC}"; }
-err()  { echo -e "  ${RED}✘  $1${NC}"; }
+err()  { echo -e "  ${RED}✘  $1${NC}"; exit 1; }
 
 ask() {
-    # ask "Pregunta" "default" → devuelve respuesta en $REPLY
     local prompt="$1" default="$2"
     echo -ne "  ${BOLD}$prompt${NC} [${CYAN}$default${NC}]: "
     read -r input
@@ -44,27 +45,44 @@ ask_secret() {
 # ── 0. Banner ─────────────────────────────────────────────────────────────────
 banner
 
-# ── 1. Recolectar configuración ───────────────────────────────────────────────
-step "Configuración del tutor"
+# ── 1. Selección de modo ──────────────────────────────────────────────────────
+step "Modo de instalación"
+echo ""
+echo -e "  ${BOLD}1)${NC} ${GREEN}HTTPS local (mkcert)${NC}"
+echo -e "     Certificado SSL auto-firmado y de confianza local. Dominio"
+echo -e "     personalizado (ej: tutor.local.openedx.io). Requiere Docker."
+echo -e "     ${YELLOW}Cookie: SameSite=None; Secure — funciona en iframe cross-origin.${NC}"
+echo ""
+echo -e "  ${BOLD}2)${NC} ${GREEN}HTTP mismo dominio${NC}"
+echo -e "     Sin HTTPS. El tutor usa el MISMO dominio que Open edX pero"
+echo -e "     distinto puerto (ej: local.openedx.io:8080). Requiere Docker."
+echo -e "     ${YELLOW}Cookie: SameSite=Lax — funciona porque comparte dominio con Open edX.${NC}"
+echo ""
+echo -e "  ${BOLD}3)${NC} ${GREEN}HTTPS producción (certificado real)${NC}"
+echo -e "     Certificado SSL real (Let's Encrypt, ZeroSSL, etc.)."
+echo -e "     Para servidores con dominio público. Requiere Docker."
+echo -e "     ${YELLOW}Cookie: SameSite=None; Secure — funciona en iframe cross-origin.${NC}"
+echo ""
+ask "Elige modo (1/2/3)" "1"
+INSTALL_MODE="$REPLY"
+
+[[ "$INSTALL_MODE" =~ ^[123]$ ]] || err "Modo inválido. Elige 1, 2 o 3."
+
+# ── 2. Configuración común ────────────────────────────────────────────────────
+step "Configuración general"
 echo "  Presiona Enter para aceptar los valores por defecto."
 echo ""
 
-ask  "Hostname del tutor (en /etc/hosts)" "tutor.local.openedx.io"
-TUTOR_HOST="$REPLY"
-
-ask  "Puerto HTTPS del tutor" "4443"
-TUTOR_HTTPS_PORT="$REPLY"
-
-ask  "Puerto HTTP del backend (FastAPI)" "8000"
-BACKEND_PORT="$REPLY"
-
-ask  "Puerto del frontend (Vite dev server)" "5173"
-FRONTEND_PORT="$REPLY"
-
-ask  "URL base de Open edX (issuer)" "http://local.openedx.io"
+ask "URL base de Open edX (issuer)" "http://local.openedx.io"
 OPENEDX_ISSUER="$REPLY"
 
-ask  "Proveedor IA (gemini / ollama)" "gemini"
+ask "Puerto del backend (FastAPI)" "8000"
+BACKEND_PORT="$REPLY"
+
+ask "Puerto del frontend (Vite dev server)" "5173"
+FRONTEND_PORT="$REPLY"
+
+ask "Proveedor IA (gemini / ollama)" "gemini"
 AI_PROVIDER="$REPLY"
 
 if [[ "$AI_PROVIDER" == "gemini" ]]; then
@@ -81,18 +99,91 @@ else
     GEMINI_API_KEY=""
 fi
 
+# ── 3. Configuración específica por modo ──────────────────────────────────────
+if [[ "$INSTALL_MODE" == "1" ]]; then
+    # ── Modo 1: HTTPS local (mkcert) ──────────────────────────────────────────
+    echo ""
+    step "Configuración HTTPS local (mkcert)"
+    ask "Hostname del tutor" "tutor.local.openedx.io"
+    TUTOR_HOST="$REPLY"
+    ask "Puerto HTTPS" "4443"
+    TUTOR_PORT="$REPLY"
+    TUTOR_HTTP_PORT="8001"
+    TUTOR_SCHEME="https"
+    APP_ENV="production"
+    NEEDS_MKCERT=true
+    NEEDS_SSL_CERT=true
+    NEEDS_HOSTS_ENTRY=true
+    SSL_CERT_FILE=""
+    SSL_KEY_FILE=""
+
+elif [[ "$INSTALL_MODE" == "2" ]]; then
+    # ── Modo 2: HTTP mismo dominio ─────────────────────────────────────────────
+    echo ""
+    step "Configuración HTTP mismo dominio"
+    warn "El hostname del tutor DEBE compartir dominio con Open edX para que"
+    warn "SameSite=Lax funcione correctamente en el iframe."
+    echo ""
+    # Extraer dominio base de Open edX issuer
+    OPENEDX_DOMAIN=$(echo "$OPENEDX_ISSUER" | sed 's|https\?://||' | cut -d: -f1)
+    ask "Hostname del tutor (mismo dominio que Open edX)" "$OPENEDX_DOMAIN"
+    TUTOR_HOST="$REPLY"
+    ask "Puerto HTTP del tutor" "8080"
+    TUTOR_PORT="$REPLY"
+    TUTOR_HTTP_PORT="$TUTOR_PORT"
+    TUTOR_SCHEME="http"
+    APP_ENV="development"
+    NEEDS_MKCERT=false
+    NEEDS_SSL_CERT=false
+    # Solo añadir a /etc/hosts si no es el mismo host que Open edX
+    if [[ "$TUTOR_HOST" == "$OPENEDX_DOMAIN" ]]; then
+        NEEDS_HOSTS_ENTRY=false
+    else
+        NEEDS_HOSTS_ENTRY=true
+    fi
+    SSL_CERT_FILE=""
+    SSL_KEY_FILE=""
+
+elif [[ "$INSTALL_MODE" == "3" ]]; then
+    # ── Modo 3: HTTPS producción (certificado real) ────────────────────────────
+    echo ""
+    step "Configuración HTTPS producción"
+    ask "Hostname/dominio del tutor" "tutor.midominio.com"
+    TUTOR_HOST="$REPLY"
+    ask "Puerto HTTPS" "443"
+    TUTOR_PORT="$REPLY"
+    TUTOR_HTTP_PORT="80"
+    TUTOR_SCHEME="https"
+    APP_ENV="production"
+    NEEDS_MKCERT=false
+    NEEDS_SSL_CERT=false
+    NEEDS_HOSTS_ENTRY=false
+
+    echo ""
+    warn "Proporciona las rutas a tu certificado SSL real."
+    ask "Ruta al certificado SSL (.pem/.crt)" "/etc/letsencrypt/live/$TUTOR_HOST/fullchain.pem"
+    SSL_CERT_FILE="$REPLY"
+    ask "Ruta a la clave privada SSL (.key)" "/etc/letsencrypt/live/$TUTOR_HOST/privkey.pem"
+    SSL_KEY_FILE="$REPLY"
+
+    [[ -f "$SSL_CERT_FILE" ]] || err "Certificado no encontrado: $SSL_CERT_FILE"
+    [[ -f "$SSL_KEY_FILE" ]]  || err "Clave privada no encontrada: $SSL_KEY_FILE"
+fi
+
+# ── Resumen ───────────────────────────────────────────────────────────────────
 echo ""
 echo -e "  ${BOLD}Resumen de configuración:${NC}"
-echo -e "  • Tutor URL:     ${CYAN}https://$TUTOR_HOST:$TUTOR_HTTPS_PORT${NC}"
+echo -e "  • Modo:          ${CYAN}$([ "$INSTALL_MODE" == "1" ] && echo "HTTPS local (mkcert)" || { [ "$INSTALL_MODE" == "2" ] && echo "HTTP mismo dominio" || echo "HTTPS producción"; })${NC}"
+echo -e "  • Tutor URL:     ${CYAN}${TUTOR_SCHEME}://$TUTOR_HOST:$TUTOR_PORT${NC}"
+echo -e "  • Open edX:      ${CYAN}$OPENEDX_ISSUER${NC}"
 echo -e "  • Backend:       ${CYAN}http://0.0.0.0:$BACKEND_PORT${NC}"
 echo -e "  • Frontend:      ${CYAN}http://0.0.0.0:$FRONTEND_PORT${NC}"
-echo -e "  • Open edX:      ${CYAN}$OPENEDX_ISSUER${NC}"
 echo -e "  • IA:            ${CYAN}$AI_PROVIDER${NC}"
 echo ""
 ask "¿Continuar con esta configuración?" "s"
 [[ "$REPLY" =~ ^[sS]$ ]] || { echo "Cancelado."; exit 0; }
 
-# ── 2. Instalar dependencias del sistema ──────────────────────────────────────
+# ── 4. Dependencias del sistema ───────────────────────────────────────────────
 step "Verificando dependencias del sistema"
 
 install_if_missing() {
@@ -106,15 +197,13 @@ install_if_missing() {
     fi
 }
 
-# Actualizar apt silenciosamente
 sudo apt-get update -q 2>/dev/null
-
 install_if_missing libnss3-tools certutil
 install_if_missing wget wget
 install_if_missing python3-pip pip3
 install_if_missing nodejs node
 
-# Docker
+# Docker (necesario para todos los modos — nginx proxy)
 if ! command -v docker &>/dev/null; then
     warn "Docker no encontrado. Instalando..."
     curl -fsSL https://get.docker.com | sudo sh
@@ -125,172 +214,220 @@ else
     ok "Docker $(docker --version | cut -d' ' -f3 | tr -d ',')"
 fi
 
-# mkcert
-if ! command -v mkcert &>/dev/null; then
-    info "Instalando mkcert..."
-    MKCERT_VERSION="v1.4.4"
-    ARCH=$(uname -m)
-    [[ "$ARCH" == "x86_64" ]] && MKCERT_BIN="mkcert-${MKCERT_VERSION}-linux-amd64"
-    [[ "$ARCH" == "aarch64" ]] && MKCERT_BIN="mkcert-${MKCERT_VERSION}-linux-arm64"
-    [[ "$ARCH" == "armv7l" ]]  && MKCERT_BIN="mkcert-${MKCERT_VERSION}-linux-arm"
-    if [[ -z "${MKCERT_BIN:-}" ]]; then
-        err "Arquitectura $ARCH no soportada para mkcert automático. Instálalo manualmente."
-        exit 1
+# mkcert (solo modo 1)
+if [[ "$NEEDS_MKCERT" == "true" ]]; then
+    if ! command -v mkcert &>/dev/null; then
+        info "Instalando mkcert..."
+        MKCERT_VERSION="v1.4.4"
+        ARCH=$(uname -m)
+        [[ "$ARCH" == "x86_64" ]] && MKCERT_BIN="mkcert-${MKCERT_VERSION}-linux-amd64"
+        [[ "$ARCH" == "aarch64" ]] && MKCERT_BIN="mkcert-${MKCERT_VERSION}-linux-arm64"
+        [[ "$ARCH" == "armv7l" ]]  && MKCERT_BIN="mkcert-${MKCERT_VERSION}-linux-arm"
+        if [[ -z "${MKCERT_BIN:-}" ]]; then
+            err "Arquitectura $ARCH no soportada para mkcert automático. Instálalo manualmente."
+        fi
+        wget -q "https://github.com/FiloSottile/mkcert/releases/download/${MKCERT_VERSION}/${MKCERT_BIN}" -O /tmp/mkcert
+        chmod +x /tmp/mkcert
+        sudo mv /tmp/mkcert /usr/local/bin/mkcert
+        ok "mkcert instalado"
+    else
+        ok "mkcert $(mkcert --version 2>/dev/null || echo 'disponible')"
     fi
-    wget -q "https://github.com/FiloSottile/mkcert/releases/download/${MKCERT_VERSION}/${MKCERT_BIN}" -O /tmp/mkcert
-    chmod +x /tmp/mkcert
-    sudo mv /tmp/mkcert /usr/local/bin/mkcert
-    ok "mkcert instalado"
-else
-    ok "mkcert $(mkcert --version 2>/dev/null || echo 'disponible')"
 fi
 
-# ── 3. Instalar CA local de mkcert ────────────────────────────────────────────
-step "Instalando CA local de mkcert (autoridad certificadora)"
-mkcert -install
-ok "CA local instalada — el navegador confiará en los certificados generados"
-
-# ── 4. /etc/hosts ─────────────────────────────────────────────────────────────
-step "Verificando /etc/hosts"
-if grep -q "^127.0.0.1.*$TUTOR_HOST" /etc/hosts; then
-    ok "$TUTOR_HOST ya apunta a 127.0.0.1"
-else
-    info "Añadiendo $TUTOR_HOST a /etc/hosts..."
-    echo "127.0.0.1 $TUTOR_HOST" | sudo tee -a /etc/hosts > /dev/null
-    ok "$TUTOR_HOST → 127.0.0.1 añadido"
+# ── 5. Instalar CA local de mkcert (solo modo 1) ──────────────────────────────
+if [[ "$NEEDS_MKCERT" == "true" ]]; then
+    step "Instalando CA local de mkcert"
+    mkcert -install
+    ok "CA local instalada — el navegador confiará en los certificados generados"
 fi
 
-# ── 5. Generar certificados SSL ───────────────────────────────────────────────
-step "Generando certificado SSL local"
+# ── 6. /etc/hosts ─────────────────────────────────────────────────────────────
+if [[ "$NEEDS_HOSTS_ENTRY" == "true" ]]; then
+    step "Verificando /etc/hosts"
+    if grep -q "^127.0.0.1.*$TUTOR_HOST" /etc/hosts; then
+        ok "$TUTOR_HOST ya apunta a 127.0.0.1"
+    else
+        info "Añadiendo $TUTOR_HOST a /etc/hosts..."
+        echo "127.0.0.1 $TUTOR_HOST" | sudo tee -a /etc/hosts > /dev/null
+        ok "$TUTOR_HOST → 127.0.0.1 añadido"
+    fi
+fi
+
+# ── 7. Generar/copiar certificados SSL ────────────────────────────────────────
 CERTS_DIR="$SCRIPT_DIR/nginx/certs"
 mkdir -p "$CERTS_DIR"
 
-CERT_FILE="$CERTS_DIR/$TUTOR_HOST.pem"
-KEY_FILE="$CERTS_DIR/$TUTOR_HOST-key.pem"
+if [[ "$INSTALL_MODE" == "1" ]]; then
+    step "Generando certificado SSL local (mkcert)"
+    CERT_FILE="$CERTS_DIR/$TUTOR_HOST.pem"
+    KEY_FILE="$CERTS_DIR/$TUTOR_HOST-key.pem"
 
-if [[ -f "$CERT_FILE" && -f "$KEY_FILE" ]]; then
-    info "Certificados ya existen, regenerando para hostname actualizado..."
+    pushd "$CERTS_DIR" > /dev/null
+    mkcert "$TUTOR_HOST" localhost 127.0.0.1 2>/dev/null
+    popd > /dev/null
+
+    GENERATED_CERT=$(ls "$CERTS_DIR"/*.pem 2>/dev/null | grep -v "\-key" | head -1)
+    GENERATED_KEY=$(ls "$CERTS_DIR"/*-key.pem 2>/dev/null | head -1)
+
+    [[ "$GENERATED_CERT" != "$CERT_FILE" && -f "$GENERATED_CERT" ]] && mv "$GENERATED_CERT" "$CERT_FILE"
+    [[ "$GENERATED_KEY"  != "$KEY_FILE"  && -f "$GENERATED_KEY"  ]] && mv "$GENERATED_KEY"  "$KEY_FILE"
+
+    ok "Certificado: $CERT_FILE"
+    ok "Clave:       $KEY_FILE"
+
+elif [[ "$INSTALL_MODE" == "3" ]]; then
+    step "Enlazando certificado SSL de producción"
+    CERT_FILE="$CERTS_DIR/$TUTOR_HOST.pem"
+    KEY_FILE="$CERTS_DIR/$TUTOR_HOST-key.pem"
+    cp "$SSL_CERT_FILE" "$CERT_FILE"
+    cp "$SSL_KEY_FILE"  "$KEY_FILE"
+    ok "Certificado copiado a $CERTS_DIR"
 fi
 
-# Generar en el directorio de certs
-pushd "$CERTS_DIR" > /dev/null
-mkcert "$TUTOR_HOST" localhost 127.0.0.1 2>/dev/null
-popd > /dev/null
-
-# mkcert genera nombre con "+" si hay múltiples hosts — normalizar
-GENERATED_CERT=$(ls "$CERTS_DIR"/*.pem 2>/dev/null | grep -v "\-key" | head -1)
-GENERATED_KEY=$(ls "$CERTS_DIR"/*-key.pem 2>/dev/null | head -1)
-
-if [[ "$GENERATED_CERT" != "$CERT_FILE" && -f "$GENERATED_CERT" ]]; then
-    mv "$GENERATED_CERT" "$CERT_FILE"
-fi
-if [[ "$GENERATED_KEY" != "$KEY_FILE" && -f "$GENERATED_KEY" ]]; then
-    mv "$GENERATED_KEY" "$KEY_FILE"
-fi
-
-ok "Certificado: $CERT_FILE"
-ok "Clave:       $KEY_FILE"
-
-# ── 6. Generar nginx config ───────────────────────────────────────────────────
+# ── 8. Generar nginx config ───────────────────────────────────────────────────
 step "Generando configuración nginx"
 NGINX_CONF="$SCRIPT_DIR/nginx/tutor_proxy.conf"
-
-# Detectar IP del bridge Docker (172.17.0.1 por defecto)
 DOCKER_BRIDGE_IP=$(ip route show | grep docker0 | grep -oP 'src \K[\d.]+' 2>/dev/null || echo "172.17.0.1")
 info "IP bridge Docker detectada: $DOCKER_BRIDGE_IP"
 
-cat > "$NGINX_CONF" <<NGINX
+if [[ "$INSTALL_MODE" == "1" || "$INSTALL_MODE" == "3" ]]; then
+    # ── Config HTTPS ─────────────────────────────────────────────────────────
+    cat > "$NGINX_CONF" <<NGINX
 # ── HTTP → redirige a HTTPS ──────────────────────────────────────────────────
 server {
     listen 80;
     server_name $TUTOR_HOST;
-    return 301 https://\$host:${TUTOR_HTTPS_PORT}\$request_uri;
+    return 301 https://\$host:${TUTOR_PORT}\$request_uri;
 }
 
-# ── HTTPS (LTI en iframe requiere SameSite=None;Secure → necesita HTTPS) ─────
+# ── HTTPS ─────────────────────────────────────────────────────────────────────
 server {
     listen 443 ssl;
     server_name $TUTOR_HOST;
 
     ssl_certificate     /etc/nginx/certs/$TUTOR_HOST.pem;
     ssl_certificate_key /etc/nginx/certs/$TUTOR_HOST-key.pem;
-
     ssl_protocols       TLSv1.2 TLSv1.3;
     ssl_ciphers         HIGH:!aNULL:!MD5;
 
-    # NO enviar X-Frame-Options: el tutor debe cargarse en iframe de Open edX
+    # Sin X-Frame-Options: el tutor se carga en el iframe de Open edX
 
-    # Frontend (React/Vite)
     location / {
         proxy_pass http://${DOCKER_BRIDGE_IP}:${FRONTEND_PORT};
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto https;
-        # WebSocket HMR para Vite
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
     }
 
-    # Backend API
     location /api/ {
         proxy_pass http://${DOCKER_BRIDGE_IP}:${BACKEND_PORT};
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto https;
     }
 
-    # LTI Endpoints
     location /lti/ {
         proxy_pass http://${DOCKER_BRIDGE_IP}:${BACKEND_PORT};
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto https;
     }
 }
 NGINX
 
+elif [[ "$INSTALL_MODE" == "2" ]]; then
+    # ── Config HTTP ──────────────────────────────────────────────────────────
+    cat > "$NGINX_CONF" <<NGINX
+# ── HTTP (mismo dominio que Open edX, distinto puerto) ───────────────────────
+server {
+    listen 80;
+    server_name $TUTOR_HOST;
+
+    # Sin X-Frame-Options: el tutor se carga en el iframe de Open edX
+    # SameSite=Lax funciona porque el dominio es el mismo que Open edX
+
+    location / {
+        proxy_pass http://${DOCKER_BRIDGE_IP}:${FRONTEND_PORT};
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-Proto http;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+
+    location /api/ {
+        proxy_pass http://${DOCKER_BRIDGE_IP}:${BACKEND_PORT};
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-Proto http;
+    }
+
+    location /lti/ {
+        proxy_pass http://${DOCKER_BRIDGE_IP}:${BACKEND_PORT};
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-Proto http;
+    }
+}
+NGINX
+fi
+
 ok "nginx config generada"
 
-# ── 7. Generar docker-compose.yml ─────────────────────────────────────────────
+# ── 9. Generar docker-compose.yml ─────────────────────────────────────────────
 step "Generando docker-compose.yml"
+
+if [[ "$INSTALL_MODE" == "1" ]]; then
+    COMPOSE_PORTS="      - \"${TUTOR_HTTP_PORT}:80\"\n      - \"${TUTOR_PORT}:443\""
+    COMPOSE_VOLUMES="      - ./nginx/tutor_proxy.conf:/etc/nginx/conf.d/default.conf:ro\n      - ./nginx/certs:/etc/nginx/certs:ro"
+elif [[ "$INSTALL_MODE" == "2" ]]; then
+    COMPOSE_PORTS="      - \"${TUTOR_PORT}:80\""
+    COMPOSE_VOLUMES="      - ./nginx/tutor_proxy.conf:/etc/nginx/conf.d/default.conf:ro"
+elif [[ "$INSTALL_MODE" == "3" ]]; then
+    COMPOSE_PORTS="      - \"${TUTOR_HTTP_PORT}:80\"\n      - \"${TUTOR_PORT}:443\""
+    COMPOSE_VOLUMES="      - ./nginx/tutor_proxy.conf:/etc/nginx/conf.d/default.conf:ro\n      - ./nginx/certs:/etc/nginx/certs:ro"
+fi
+
 cat > "$SCRIPT_DIR/docker-compose.yml" <<COMPOSE
 services:
   proxy:
     image: nginx:alpine
     container_name: tutor_proxy
     ports:
-      - "8001:80"               # HTTP (redirige a HTTPS)
-      - "${TUTOR_HTTPS_PORT}:443"  # HTTPS con certificado mkcert local
+$(printf '%b' "$COMPOSE_PORTS" | sed 's/^/      /')
     volumes:
-      - ./nginx/tutor_proxy.conf:/etc/nginx/conf.d/default.conf:ro
-      - ./nginx/certs:/etc/nginx/certs:ro
+$(printf '%b' "$COMPOSE_VOLUMES" | sed 's/^/      /')
     restart: unless-stopped
 COMPOSE
+
 ok "docker-compose.yml actualizado"
 
-# ── 8. Generar SECRET_KEY segura ──────────────────────────────────────────────
-SECRET_KEY=$(python3 -c "import secrets; print(secrets.token_hex(32))")
-
-# ── 9. Actualizar backend/.env ────────────────────────────────────────────────
+# ── 10. Generar backend/.env ──────────────────────────────────────────────────
 step "Escribiendo backend/.env"
 ENV_FILE="$SCRIPT_DIR/backend/.env"
 
-# Construir ALLOWED_ORIGINS
-ALLOWED="https://$TUTOR_HOST:$TUTOR_HTTPS_PORT,$OPENEDX_ISSUER,http://localhost:$FRONTEND_PORT,http://localhost:$BACKEND_PORT"
-# Añadir dominios comunes de Open edX local
-ALLOWED="$ALLOWED,http://apps.local.openedx.io,http://local.openedx.io"
+SECRET_KEY=$(python3 -c "import secrets; print(secrets.token_hex(32))")
+
+TUTOR_BASE_URL="${TUTOR_SCHEME}://${TUTOR_HOST}:${TUTOR_PORT}"
+
+# ALLOWED_ORIGINS
+ALLOWED="${TUTOR_BASE_URL},${OPENEDX_ISSUER},http://localhost:${FRONTEND_PORT},http://localhost:${BACKEND_PORT}"
+ALLOWED="${ALLOWED},http://apps.local.openedx.io,http://local.openedx.io"
 
 cat > "$ENV_FILE" <<ENV
 # ─── Generado por setup.sh — $(date '+%Y-%m-%d %H:%M:%S') ───────────────────
+# ─── Modo: $([ "$INSTALL_MODE" == "1" ] && echo "HTTPS local (mkcert)" || { [ "$INSTALL_MODE" == "2" ] && echo "HTTP mismo dominio" || echo "HTTPS producción"; }) ─────────────────────────────────────────────
+
 # ─── Servidor ────────────────────────────────────────────────────────────────
-APP_ENV=production
+APP_ENV=${APP_ENV}
 APP_HOST=0.0.0.0
 APP_PORT=${BACKEND_PORT}
-BASE_URL=https://${TUTOR_HOST}:${TUTOR_HTTPS_PORT}
+BASE_URL=${TUTOR_BASE_URL}
 
 # ─── Seguridad ────────────────────────────────────────────────────────────────
 SECRET_KEY=${SECRET_KEY}
@@ -319,13 +456,13 @@ OLLAMA_BASE_URL=${OLLAMA_BASE_URL}
 OLLAMA_MODEL=${OLLAMA_MODEL}
 
 # ─── CORS / Frontend ─────────────────────────────────────────────────────────
-FRONTEND_URL=https://${TUTOR_HOST}:${TUTOR_HTTPS_PORT}
+FRONTEND_URL=${TUTOR_BASE_URL}
 ALLOWED_ORIGINS=${ALLOWED}
 ENV
 
 ok "backend/.env escrito"
 
-# ── 10. Instalar dependencias Python ──────────────────────────────────────────
+# ── 11. Instalar dependencias Python ──────────────────────────────────────────
 step "Verificando dependencias Python (venv)"
 VENV="$SCRIPT_DIR/backend/venv"
 if [[ ! -d "$VENV" ]]; then
@@ -335,12 +472,11 @@ if [[ ! -d "$VENV" ]]; then
 else
     ok "venv ya existe"
 fi
-
 info "Instalando/actualizando paquetes Python..."
 "$VENV/bin/pip" install -q -r "$SCRIPT_DIR/backend/requirements.txt"
 ok "Dependencias Python listas"
 
-# ── 11. Instalar dependencias Node ────────────────────────────────────────────
+# ── 12. Instalar dependencias Node ────────────────────────────────────────────
 step "Verificando dependencias Node.js"
 if [[ ! -d "$SCRIPT_DIR/frontend/node_modules" ]]; then
     info "Ejecutando npm install..."
@@ -350,19 +486,18 @@ else
     ok "node_modules ya existe"
 fi
 
-# ── 12. Levantar proxy nginx (Docker) ─────────────────────────────────────────
+# ── 13. Levantar proxy nginx (Docker) ─────────────────────────────────────────
 step "Levantando proxy nginx con Docker"
 cd "$SCRIPT_DIR"
 docker compose down --remove-orphans 2>/dev/null || true
 docker compose up -d
-ok "Proxy nginx corriendo en puerto $TUTOR_HTTPS_PORT (HTTPS)"
+ok "Proxy nginx corriendo"
 
-# ── 13. Lanzar backend ────────────────────────────────────────────────────────
+# ── 14. Lanzar backend ────────────────────────────────────────────────────────
 step "Lanzando backend FastAPI"
 LOG_DIR="$SCRIPT_DIR/logs"
 mkdir -p "$LOG_DIR"
 
-# Matar proceso previo si existe
 pkill -f "uvicorn app.main:app" 2>/dev/null || true
 sleep 1
 
@@ -376,7 +511,7 @@ BACKEND_PID=$!
 echo "$BACKEND_PID" > "$LOG_DIR/backend.pid"
 ok "Backend PID $BACKEND_PID → log: logs/backend.log"
 
-# ── 14. Lanzar frontend ───────────────────────────────────────────────────────
+# ── 15. Lanzar frontend ───────────────────────────────────────────────────────
 step "Lanzando frontend Vite"
 pkill -f "vite" 2>/dev/null || true
 sleep 1
@@ -388,7 +523,7 @@ FRONTEND_PID=$!
 echo "$FRONTEND_PID" > "$LOG_DIR/frontend.pid"
 ok "Frontend PID $FRONTEND_PID → log: logs/frontend.log"
 
-# ── 15. Esperar y verificar servicios ─────────────────────────────────────────
+# ── 16. Verificar servicios ───────────────────────────────────────────────────
 step "Verificando que los servicios respondan..."
 sleep 4
 
@@ -396,34 +531,42 @@ check_service() {
     local name="$1" url="$2"
     if curl -sk --max-time 5 "$url" > /dev/null 2>&1; then
         ok "$name responde en $url"
-        return 0
     else
         warn "$name aún no responde en $url (puede tardar unos segundos más)"
-        return 1
     fi
 }
 
-check_service "Backend (health)" "http://localhost:$BACKEND_PORT/api/health"
-check_service "Frontend (Vite)"  "http://localhost:$FRONTEND_PORT"
-check_service "Proxy HTTPS"      "https://$TUTOR_HOST:$TUTOR_HTTPS_PORT/api/health"
+check_service "Backend"  "http://localhost:$BACKEND_PORT/api/health"
+check_service "Frontend" "http://localhost:$FRONTEND_PORT"
+check_service "Proxy"    "${TUTOR_BASE_URL}/api/health"
 
-# ── 16. Resumen final ─────────────────────────────────────────────────────────
+# ── 17. Resumen final ─────────────────────────────────────────────────────────
 echo ""
 echo -e "${CYAN}${BOLD}╔══════════════════════════════════════════════════════════════╗${NC}"
 echo -e "${CYAN}${BOLD}║                    ✅  TODO LISTO                           ║${NC}"
 echo -e "${CYAN}${BOLD}╚══════════════════════════════════════════════════════════════╝${NC}"
 echo ""
+echo -e "${BOLD}  Modo:${NC} $([ "$INSTALL_MODE" == "1" ] && echo "HTTPS local (mkcert)" || { [ "$INSTALL_MODE" == "2" ] && echo "HTTP mismo dominio" || echo "HTTPS producción"; })"
+echo ""
 echo -e "${BOLD}  URLs del Tutor:${NC}"
-echo -e "  ${GREEN}🌐 Tutor HTTPS:${NC}  https://$TUTOR_HOST:$TUTOR_HTTPS_PORT"
-echo -e "  ${GREEN}🔧 Admin panel:${NC}  https://$TUTOR_HOST:$TUTOR_HTTPS_PORT/?admin=1"
+echo -e "  ${GREEN}🌐 Tutor:${NC}        ${TUTOR_BASE_URL}"
+echo -e "  ${GREEN}🔧 Admin panel:${NC}  ${TUTOR_BASE_URL}/?admin=1"
 echo -e "  ${GREEN}📋 API Docs:${NC}     http://localhost:$BACKEND_PORT/docs"
 echo ""
-echo -e "${BOLD}  Registra en Open edX Studio (mismo valor para todos tus bloques):${NC}"
-echo -e "  ${YELLOW}Tool Launch URL:${NC}    https://$TUTOR_HOST:$TUTOR_HTTPS_PORT/lti/launch"
-echo -e "  ${YELLOW}Login Initiation URL:${NC} https://$TUTOR_HOST:$TUTOR_HTTPS_PORT/lti/login"
-echo -e "  ${YELLOW}Redirect URI:${NC}       https://$TUTOR_HOST:$TUTOR_HTTPS_PORT/lti/launch"
-echo -e "  ${YELLOW}JWKS / Keyset URL:${NC}  https://$TUTOR_HOST:$TUTOR_HTTPS_PORT/lti/jwks"
+echo -e "${BOLD}  Registra en Open edX Studio (mismo valor para todos los bloques LTI):${NC}"
+echo -e "  ${YELLOW}Tool Launch URL:${NC}      ${TUTOR_BASE_URL}/lti/launch"
+echo -e "  ${YELLOW}Login Initiation URL:${NC} ${TUTOR_BASE_URL}/lti/login"
+echo -e "  ${YELLOW}Redirect URI:${NC}         ${TUTOR_BASE_URL}/lti/launch"
+echo -e "  ${YELLOW}JWKS / Keyset URL:${NC}    ${TUTOR_BASE_URL}/lti/jwks"
 echo ""
+
+if [[ "$INSTALL_MODE" == "2" ]]; then
+    echo -e "  ${YELLOW}⚠  Modo HTTP:${NC} Las cookies usan SameSite=Lax."
+    echo -e "     Funciona porque el dominio del tutor (${TUTOR_HOST}) es"
+    echo -e "     el mismo que Open edX. No usar con dominios distintos."
+    echo ""
+fi
+
 echo -e "${BOLD}  Logs en tiempo real:${NC}"
 echo -e "  tail -f $LOG_DIR/backend.log"
 echo -e "  tail -f $LOG_DIR/frontend.log"
