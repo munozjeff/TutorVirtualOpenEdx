@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.database import get_db
-from app.models import LtiPlatformRegistration
+from app.models import LtiInstance, LtiPlatformRegistration, LtiSession, Challenge, ChallengeAttempt, ChatMessage
 
 log = logging.getLogger(__name__)
 settings = get_settings()
@@ -165,6 +165,40 @@ async def delete_registration(registration_id: str, db: AsyncSession = Depends(g
     if not reg:
         raise HTTPException(status_code=404, detail="Registro no encontrado.")
     label = reg.label
+
+    # Load all child instances and delete their dependents manually
+    instances_res = await db.execute(
+        select(LtiInstance).where(LtiInstance.registration_id == registration_id)
+    )
+    instances = instances_res.scalars().all()
+
+    for inst in instances:
+        # Delete sessions and their messages
+        sessions_res = await db.execute(
+            select(LtiSession).where(LtiSession.instance_id == inst.id)
+        )
+        for sess in sessions_res.scalars().all():
+            msgs_res = await db.execute(
+                select(ChatMessage).where(ChatMessage.session_id == sess.id)
+            )
+            for msg in msgs_res.scalars().all():
+                await db.delete(msg)
+            await db.delete(sess)
+
+        # Delete challenges and their attempts
+        challs_res = await db.execute(
+            select(Challenge).where(Challenge.instance_id == inst.id)
+        )
+        for ch in challs_res.scalars().all():
+            atts_res = await db.execute(
+                select(ChallengeAttempt).where(ChallengeAttempt.challenge_id == ch.id)
+            )
+            for att in atts_res.scalars().all():
+                await db.delete(att)
+            await db.delete(ch)
+
+        await db.delete(inst)
+
     await db.delete(reg)
-    log.info("Registration deleted: %s", label)
+    log.info("Registration deleted: %s (instances: %d)", label, len(instances))
     return {"message": f"Registro '{label}' eliminado."}

@@ -120,6 +120,16 @@ async def _load_challenge_context(
             first_sibling_pending: tuple[Challenge, ChallengeAttempt, str] | None = None
 
             for sib in siblings:
+                # Only consider blocks the student has actually opened
+                sib_sess_res = await db.execute(
+                    select(LtiSession).where(
+                        LtiSession.instance_id == sib.id,
+                        LtiSession.user_id == session.user_id,
+                    )
+                )
+                if not sib_sess_res.scalars().first():
+                    continue
+
                 sib_challs_res = await db.execute(
                     select(Challenge).where(Challenge.instance_id == sib.id).order_by(Challenge.order)
                 )
@@ -152,6 +162,98 @@ async def _load_challenge_context(
 
 
 # ─── Endpoints ────────────────────────────────────────────────────────────────
+
+@router.post("/greeting", response_model=MessageOut, summary="Generate and save AI greeting as first message")
+async def generate_greeting(
+    session: LtiSession = Depends(get_current_session),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Generates a personalized AI greeting based on challenge state and saves it
+    as the first message in the session. Called when the block opens with no history.
+    """
+    instance = session.instance
+    provider = get_ai_provider()
+
+    current_challenge, current_attempt, _, _, _ = await _load_challenge_context(db, session)
+
+    tutor_name = instance.tutor_name or "Tutor Virtual"
+    course_name = session.course_name or "el curso"
+    topic = instance.topic or ""
+
+    # Build state description for AI
+    if current_challenge:
+        attempt_count = current_attempt.attempts_count if current_attempt else 0
+        if attempt_count > 0:
+            state_info = (
+                f"El estudiante ya intentó el desafío '{current_challenge.title or current_challenge.question[:60]}' "
+                f"{attempt_count} vez/veces pero aún no lo ha superado."
+            )
+        else:
+            state_info = (
+                f"El estudiante tiene un desafío pendiente titulado '{current_challenge.title or 'Desafío'}'."
+            )
+        challenge_text = current_challenge.question
+    else:
+        # Check if there were challenges that are all passed
+        chall_res = await db.execute(
+            select(Challenge).where(Challenge.instance_id == instance.id)
+        )
+        has_challenges = chall_res.scalars().first() is not None
+        if has_challenges:
+            state_info = "El estudiante ya completó todos los desafíos de este bloque exitosamente."
+        else:
+            state_info = "Este bloque no tiene desafíos configurados."
+        challenge_text = None
+
+    system = (
+        f"Eres {tutor_name}, un tutor virtual amigable y motivador en el curso '{course_name}'. "
+        + (f"El tema de este bloque es: {topic}. " if topic else "")
+        + "Genera un saludo inicial cálido, natural y conciso (máximo 4 oraciones) para el estudiante. "
+        "No uses listas ni encabezados. Escribe en prosa fluida."
+    )
+
+    if current_challenge:
+        user_prompt = (
+            f"Contexto: {state_info}\n"
+            "Saluda al estudiante, menciónale que tienes un desafío para él que le ayudará a reforzar "
+            "el tema estudiado, y preséntale el siguiente desafío de forma motivadora:\n\n"
+            f"{challenge_text}\n\n"
+            "Invítalo a responder cuando esté listo."
+        )
+    elif challenge_text is None and "completó" in state_info:
+        user_prompt = (
+            f"Contexto: {state_info}\n"
+            "Felicita al estudiante por haber completado el desafío y ofrécete a responder cualquier "
+            "pregunta adicional sobre el tema o a profundizar en lo que necesite."
+        )
+    else:
+        user_prompt = (
+            "Saluda al estudiante, preséntate brevemente y ofrécete a ayudarle con el tema del bloque. "
+            "Muéstrate disponible y entusiasta."
+        )
+
+    try:
+        greeting_text = await provider.chat(system_prompt=system, history=[], user_message=user_prompt)
+    except Exception as e:
+        log.error("Failed to generate greeting: %s", e)
+        greeting_text = f"¡Hola! Soy {tutor_name}. Estoy aquí para ayudarte. ¿En qué puedo asistirte hoy?"
+
+    # Delete any existing AI-only messages (stale greetings) before saving the new one
+    existing_res = await db.execute(
+        select(ChatMessage).where(ChatMessage.session_id == session.id).order_by(ChatMessage.created_at)
+    )
+    existing = existing_res.scalars().all()
+    for m in existing:
+        await db.delete(m)
+
+    msg = ChatMessage(session_id=session.id, role="assistant", content=greeting_text)
+    db.add(msg)
+    await db.flush()
+
+    log.info("Greeting regenerated for session=%s", session.id[:8])
+    return MessageOut(role="assistant", content=greeting_text, created_at=msg.created_at.isoformat())
+
 
 @router.get("/history", response_model=List[MessageOut], summary="Get chat history")
 async def get_history(
@@ -286,18 +388,28 @@ async def send_message(
 
         eval_instructions = (
             "\nINSTRUCCIONES PARA EVALUAR LA RESPUESTA:\n"
+            "PASO 1 — DETECTA SI ES UNA RESPUESTA AL DESAFÍO O UN MENSAJE CONVERSACIONAL:\n"
+            "- Si el mensaje del estudiante es conversacional ('sí', 'no', 'ok', 'claro', 'hola', "
+            "'gracias', 'de acuerdo', etc.) en respuesta a algo que TÚ preguntaste (como '¿quieres "
+            "intentar un desafío pendiente?'), NO lo evalúes como intento al desafío. Responde "
+            "apropiadamente: si dijo 'sí' a intentar un desafío pendiente, PRESÉNTALE ese desafío "
+            "de la lista DESAFÍOS PENDIENTES DE OTROS BLOQUES. Si dijo 'no', respeta su decisión.\n"
+            "- Solo evalúa como intento al desafío cuando el estudiante claramente intenta responder "
+            "la pregunta del desafío.\n\n"
+            "PASO 2 — EVALÚA LA RESPUESTA AL DESAFÍO:\n"
+            "- COPIA LITERAL DETECTADA: Si la respuesta del estudiante es una copia casi exacta "
+            "de texto que aparece en el historial de esta conversación o es una cita directa sin "
+            "elaboración propia, NO la aceptes como correcta. Pídele que explique el concepto "
+            "CON SUS PROPIAS PALABRAS para verificar su comprensión real. NO uses [CORRECTO].\n"
             "- Evalúa si TODOS los datos factuales requeridos son correctos.\n"
-            "- Acepta paráfrasis y sinónimos ÚNICAMENTE si los hechos son correctos "
-            "(ej: 'mediados del 1700' ≈ 'mediados del siglo XVIII' → CORRECTO).\n"
+            "- Acepta paráfrasis y sinónimos ÚNICAMENTE si los hechos son correctos y el "
+            "estudiante demuestra comprensión propia (no copia textual).\n"
             "- RECHAZA si cualquier dato factual clave es erróneo: siglo/fecha equivocada, "
-            "lugar incorrecto, nombre wrong, cantidad distinta, etc. "
-            "Un error factual parcial hace la respuesta INCORRECTA aunque el resto esté bien.\n"
-            "- NUNCA uses [CORRECTO] si hay algún dato factual incorrecto en la respuesta, "
-            "aunque el estudiante haya acertado otros aspectos.\n"
-            "- Si la respuesta ES CORRECTA (todos los hechos clave son correctos): "
-            "incluye el marcador exacto [CORRECTO] en tu respuesta y felicita al estudiante.\n"
-            "- Si la respuesta NO ES CORRECTA: señala qué dato específico está mal y usa "
-            "el método socrático para guiar al estudiante. NO des la respuesta directamente.\n"
+            "lugar incorrecto, concepto opuesto, etc.\n"
+            "- Si la respuesta ES CORRECTA y demuestra comprensión genuina: incluye el marcador "
+            "exacto [CORRECTO] y felicita al estudiante.\n"
+            "- Si la respuesta NO ES CORRECTA: usa el método socrático. Haz preguntas guía, "
+            "pide que reformule. NUNCA des la respuesta directamente.\n"
         )
 
         if is_from_sibling:

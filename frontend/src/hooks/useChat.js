@@ -20,13 +20,21 @@ export function useChat() {
                 ])
                 setUserInfo(me)
                 setConfig(cfg)
-                setMessages(history)
 
-                // Add welcome message if no history
-                if (history.length === 0 && cfg.welcome_message) {
-                    setMessages([
-                        { role: 'assistant', content: cfg.welcome_message, created_at: new Date().toISOString() },
-                    ])
+                // Call greeting if no user messages yet (conversation not started or stale greeting)
+                const hasUserMessages = history.some(m => m.role === 'user')
+                if (!hasUserMessages) {
+                    setIsLoading(true)
+                    try {
+                        const greeting = await chatApi.generateGreeting()
+                        setMessages([greeting])
+                    } catch {
+                        setMessages(history.length > 0 ? history : [])
+                    } finally {
+                        setIsLoading(false)
+                    }
+                } else {
+                    setMessages(history)
                 }
             } catch (err) {
                 setError(err.response?.data?.detail || 'No se pudo iniciar la sesión. Lanza el tutor desde Open edX.')
@@ -61,15 +69,19 @@ export function useChat() {
     const clearHistory = useCallback(async () => {
         try {
             await chatApi.clearHistory()
-            setMessages(
-                config?.welcome_message
-                    ? [{ role: 'assistant', content: config.welcome_message, created_at: new Date().toISOString() }]
-                    : []
-            )
+            setIsLoading(true)
+            try {
+                const greeting = await chatApi.generateGreeting()
+                setMessages([greeting])
+            } catch {
+                setMessages([])
+            } finally {
+                setIsLoading(false)
+            }
         } catch (err) {
             setError('No se pudo borrar el historial.')
         }
-    }, [config])
+    }, [])
 
     return {
         messages,

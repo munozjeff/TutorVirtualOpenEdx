@@ -6,7 +6,6 @@ export default function InstructorView({ config, onConfigUpdate, onClearHistory,
         tutor_name: config?.tutor_name || '',
         topic: config?.topic || '',
         system_prompt: config?.system_prompt || '',
-        welcome_message: config?.welcome_message || '',
         mode: config?.mode || 'libre',
     })
     const [sharingForm, setSharingForm] = useState({
@@ -113,7 +112,6 @@ export default function InstructorView({ config, onConfigUpdate, onClearHistory,
                 tutor_name: config.tutor_name || '',
                 topic: config.topic || '',
                 system_prompt: config.system_prompt || '',
-                welcome_message: config.welcome_message || '',
                 mode: config.mode || 'libre',
             })
             setSharingForm({
@@ -464,13 +462,6 @@ export default function InstructorView({ config, onConfigUpdate, onClearHistory,
                         <textarea className="form-textarea" value={form.system_prompt}
                             onChange={(e) => setForm({ ...form, system_prompt: e.target.value })}
                             rows={4} placeholder="Eres un tutor experto en…" />
-                    </div>
-
-                    <div className="form-group">
-                        <label className="form-label">Mensaje de Bienvenida</label>
-                        <textarea className="form-textarea" value={form.welcome_message}
-                            onChange={(e) => setForm({ ...form, welcome_message: e.target.value })}
-                            rows={2} placeholder="¡Hola! ¿En qué puedo ayudarte?" />
                     </div>
 
                     <button className="btn-primary" onClick={handleSaveConfig} disabled={isSaving}>

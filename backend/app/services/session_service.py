@@ -23,25 +23,20 @@ log = logging.getLogger(__name__)
 def compute_isolation_key(
     user_id: str,
     resource_link_id: str,
-    context_id: str,
+    context_id: str = "",
     share_context: bool = False,
     share_group_id: Optional[str] = None,
 ) -> str:
     """
     Compute the isolation key for a student session.
 
-    - Default (no sharing): SHA256(user_id + resource_link_id)
-      → Completely isolated per block instance per user.
+    Always scoped to user × block (resource_link_id).
+    Each block keeps its own independent session and chat history.
 
-    - Sharing enabled: SHA256(user_id + context_id + share_group_id)
-      → Instances in the same share group share history for this user.
-      → Still isolated from other users (user_id is part of key).
+    share_group_id is used ONLY to look up sibling challenge statuses,
+    never to merge sessions between blocks.
     """
-    if share_context and share_group_id:
-        raw = f"{user_id}:{context_id}:{share_group_id}"
-    else:
-        raw = f"{user_id}:{resource_link_id}"
-
+    raw = f"{user_id}:{resource_link_id}"
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
@@ -127,14 +122,13 @@ async def get_or_create_session(
             )
             session = None
         else:
-            # Refresh user data and point to the current instance.
-            # Always issue a fresh session_token so that if a different user
-            # opens the same browser, their LTI launch cookie overwrites the old one.
+            # Refresh user data. Always issue a fresh session_token so that
+            # if a different user opens the same browser, their LTI launch
+            # cookie overwrites the old one.
             session.user_name = user_name
             session.user_email = user_email
             session.user_role = user_role
             session.course_name = course_name
-            session.instance_id = instance.id
             session.session_token = generate_session_token()
             log.info("Refreshed session token for user=%s key=%s", user_id[:12], isolation_key[:12])
             return session, False

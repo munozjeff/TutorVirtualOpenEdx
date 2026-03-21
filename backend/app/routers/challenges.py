@@ -283,6 +283,16 @@ async def get_challenge_status(
             )
         )
         for sib in siblings_res.scalars().all():
+            # Only include challenges from sibling blocks the student has actually opened
+            sib_session_res = await db.execute(
+                select(LtiSession).where(
+                    LtiSession.instance_id == sib.id,
+                    LtiSession.user_id == session.user_id,
+                )
+            )
+            if not sib_session_res.scalars().first():
+                continue  # student hasn't opened this block yet
+
             sib_challs_res = await db.execute(
                 select(Challenge)
                 .where(Challenge.instance_id == sib.id)

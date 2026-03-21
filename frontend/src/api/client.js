@@ -26,6 +26,9 @@ export const chatApi = {
 
     clearHistory: () =>
         api.delete('/api/chat/history').then((r) => r.data),
+
+    generateGreeting: () =>
+        api.post('/api/chat/greeting').then((r) => r.data),
 }
 
 export const configApi = {
