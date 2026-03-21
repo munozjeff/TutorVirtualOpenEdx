@@ -118,16 +118,26 @@ async def get_or_create_session(
     session = result.scalar_one_or_none()
 
     if session:
-        # Refresh user data and always point to the current instance.
-        # This is critical for shared-memory sessions: Juan launching Instance 2
-        # reuses the same session (same isolation_key) but must get Instance 2's
-        # config (system_prompt, topic, etc.), not Instance 1's.
-        session.user_name = user_name
-        session.user_email = user_email
-        session.user_role = user_role
-        session.course_name = course_name
-        session.instance_id = instance.id
-        return session, False
+        # Verify the session belongs to the same user (safety check).
+        # Isolation_key includes user_id so this should always match.
+        if session.user_id != user_id:
+            log.warning(
+                "SECURITY: isolation_key collision! session.user_id=%s != jwt.user_id=%s — creating new session.",
+                session.user_id[:12], user_id[:12],
+            )
+            session = None
+        else:
+            # Refresh user data and point to the current instance.
+            # Always issue a fresh session_token so that if a different user
+            # opens the same browser, their LTI launch cookie overwrites the old one.
+            session.user_name = user_name
+            session.user_email = user_email
+            session.user_role = user_role
+            session.course_name = course_name
+            session.instance_id = instance.id
+            session.session_token = generate_session_token()
+            log.info("Refreshed session token for user=%s key=%s", user_id[:12], isolation_key[:12])
+            return session, False
 
     session = LtiSession(
         isolation_key=isolation_key,

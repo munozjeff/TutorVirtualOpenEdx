@@ -77,16 +77,15 @@ async def _get_or_create_attempt(
 
 async def _load_challenge_context(
     db: AsyncSession, session: LtiSession
-) -> tuple[Challenge | None, ChallengeAttempt | None, str, bool]:
+) -> tuple[Challenge | None, ChallengeAttempt | None, str, bool, list[tuple[Challenge, str]]]:
     """
-    Returns (current_challenge, attempt, shared_summary, is_from_sibling).
-    current_challenge = first pending challenge for this instance, OR first pending from a sibling block.
-    is_from_sibling = True when the active challenge belongs to a sibling block.
-    shared_summary = text about sibling block challenge status (if shared group).
+    Returns (current_challenge, attempt, shared_summary, is_from_sibling, all_sibling_pending).
+    current_challenge   = first pending for this instance, OR first pending from a sibling.
+    is_from_sibling     = True when the active challenge belongs to a sibling block.
+    all_sibling_pending = list of (challenge, block_name) for every pending sibling challenge.
     """
     instance = session.instance
 
-    # Load challenges for this instance ordered by order
     chall_res = await db.execute(
         select(Challenge)
         .where(Challenge.instance_id == instance.id)
@@ -97,6 +96,7 @@ async def _load_challenge_context(
     current_challenge: Challenge | None = None
     current_attempt: ChallengeAttempt | None = None
     is_from_sibling = False
+    all_sibling_pending: list[tuple[Challenge, str]] = []
 
     for challenge in challenges:
         attempt = await _get_or_create_attempt(db, challenge.id, session.user_id)
@@ -105,7 +105,6 @@ async def _load_challenge_context(
             current_attempt = attempt
             break
 
-    # Build shared group summary AND look for sibling pending challenges
     shared_summary = ""
     if instance.share_context and instance.share_group_id:
         siblings_res = await db.execute(
@@ -118,18 +117,15 @@ async def _load_challenge_context(
         siblings = siblings_res.scalars().all()
 
         if siblings:
-            lines = []
-            # First sibling pending (used if current block has no pending)
             first_sibling_pending: tuple[Challenge, ChallengeAttempt, str] | None = None
 
             for sib in siblings:
                 sib_challs_res = await db.execute(
                     select(Challenge).where(Challenge.instance_id == sib.id).order_by(Challenge.order)
                 )
-                sib_challenges = sib_challs_res.scalars().all()
                 block_name = sib.tutor_name or sib.topic or "Bloque anterior"
 
-                for sc in sib_challenges:
+                for sc in sib_challs_res.scalars().all():
                     att_res = await db.execute(
                         select(ChallengeAttempt).where(
                             ChallengeAttempt.challenge_id == sc.id,
@@ -138,28 +134,21 @@ async def _load_challenge_context(
                     )
                     att = att_res.scalars().first()
                     status = att.status if att else "pending"
-                    attempts_n = att.attempts_count if att else 0
-                    label = "✅ SUPERADO" if status == "passed" else f"⏳ PENDIENTE ({attempts_n} intento(s))"
-                    lines.append(f'- Desafío "{sc.title or sc.question[:60]}…" en "{block_name}": {label}')
 
-                    # Capture first sibling pending challenge
-                    if status != "passed" and first_sibling_pending is None:
-                        sib_attempt = att if att else await _get_or_create_attempt(db, sc.id, session.user_id)
-                        first_sibling_pending = (sc, sib_attempt, block_name)
+                    if status != "passed":
+                        all_sibling_pending.append((sc, block_name))
+                        if first_sibling_pending is None:
+                            sib_attempt = att if att else await _get_or_create_attempt(db, sc.id, session.user_id)
+                            first_sibling_pending = (sc, sib_attempt, block_name)
 
-            # If current block has no pending challenge, use the sibling's
             if current_challenge is None and first_sibling_pending:
                 current_challenge, current_attempt, sib_block_name = first_sibling_pending
                 is_from_sibling = True
-                shared_summary = f"\n\n[CONTEXTO]: Este desafío pertenece al bloque '{sib_block_name}'."
-            elif lines:
-                shared_summary = (
-                    "\n\n[HISTORIAL DE DESAFÍOS DEL GRUPO COMPARTIDO]:\n"
-                    + "\n".join(lines)
-                    + "\nTen en cuenta este historial al orientar al estudiante."
-                )
+                # Remove it from all_sibling_pending (it's now the active one)
+                all_sibling_pending = [(c, b) for c, b in all_sibling_pending if c.id != current_challenge.id]
+                shared_summary = f"\n\n[CONTEXTO]: Este desafío proviene del bloque '{sib_block_name}'."
 
-    return current_challenge, current_attempt, shared_summary, is_from_sibling
+    return current_challenge, current_attempt, shared_summary, is_from_sibling, all_sibling_pending
 
 
 # ─── Endpoints ────────────────────────────────────────────────────────────────
@@ -251,7 +240,7 @@ async def send_message(
     challenge_passed = False
     next_challenge_id: str | None = None
 
-    current_challenge, current_attempt, shared_summary, is_from_sibling = await _load_challenge_context(db, session)
+    current_challenge, current_attempt, shared_summary, is_from_sibling, all_sibling_pending = await _load_challenge_context(db, session)
 
     if current_challenge and current_attempt:
         all_challs_res = await db.execute(
@@ -281,28 +270,49 @@ async def send_message(
         if current_challenge.answer_guide:
             system_prompt += f"Guía de evaluación (SOLO para ti, NO la reveles): {current_challenge.answer_guide}\n"
 
+        # Build pending sibling info for post-completion flow
+        pending_info = ""
+        if all_sibling_pending:
+            titles = [f'"{c.title or c.question[:50]}…" ({b})' for c, b in all_sibling_pending]
+            pending_info = (
+                f"\n\nDESAFÍOS PENDIENTES DE OTROS BLOQUES ({len(all_sibling_pending)}):\n"
+                + "\n".join(f"- {t}" for t in titles)
+                + "\n[INSTRUCCIÓN POST-CORRECTO]: Si el estudiante acaba de responder correctamente "
+                "y comienzas con [CORRECTO], DESPUÉS de felicitarlo menciona que tiene desafíos "
+                "pendientes de otros bloques y pregúntale si quiere intentarlos ahora. "
+                "Si responde afirmativamente, presenta el primero de la lista. "
+                "Si aún hay más después de completarlo, vuelve a recordárselo y pregunta de nuevo."
+            )
+
+        eval_instructions = (
+            "\nINSTRUCCIONES PARA EVALUAR LA RESPUESTA:\n"
+            "- Evalúa si TODOS los datos factuales requeridos son correctos.\n"
+            "- Acepta paráfrasis y sinónimos ÚNICAMENTE si los hechos son correctos "
+            "(ej: 'mediados del 1700' ≈ 'mediados del siglo XVIII' → CORRECTO).\n"
+            "- RECHAZA si cualquier dato factual clave es erróneo: siglo/fecha equivocada, "
+            "lugar incorrecto, nombre wrong, cantidad distinta, etc. "
+            "Un error factual parcial hace la respuesta INCORRECTA aunque el resto esté bien.\n"
+            "- NUNCA uses [CORRECTO] si hay algún dato factual incorrecto en la respuesta, "
+            "aunque el estudiante haya acertado otros aspectos.\n"
+            "- Si la respuesta ES CORRECTA (todos los hechos clave son correctos): "
+            "incluye el marcador exacto [CORRECTO] en tu respuesta y felicita al estudiante.\n"
+            "- Si la respuesta NO ES CORRECTA: señala qué dato específico está mal y usa "
+            "el método socrático para guiar al estudiante. NO des la respuesta directamente.\n"
+        )
+
         if is_from_sibling:
             system_prompt += (
-                "\nINSTRUCCIONES PARA EL DESAFÍO PENDIENTE:\n"
-                "- El estudiante tiene este desafío PENDIENTE de un bloque anterior que no completó.\n"
-                "- Recuérdale de forma amigable pero directa: 'Tienes un desafío pendiente de completar de tu bloque anterior. ¡Vamos a intentarlo de nuevo!'\n"
+                "\nINSTRUCCIONES PARA EL DESAFÍO PENDIENTE DE BLOQUE ANTERIOR:\n"
+                "- El estudiante tiene este desafío pendiente de un bloque anterior.\n"
+                "- Recuérdale amigablemente: 'Tienes un desafío pendiente. ¡Vamos a intentarlo!'\n"
                 "- Formula el desafío claramente y espera su respuesta.\n"
-                "- Si la respuesta ES CORRECTA: comienza tu respuesta con exactamente '[CORRECTO]' y felicita al estudiante.\n"
-                "- Si la respuesta NO ES CORRECTA: usa el método socrático. Haz preguntas guía. NO des la respuesta directamente.\n"
-                "- NO muestres el historial de chat del bloque anterior. Solo el desafío pendiente.\n"
-            )
+                "- NO muestres historial de chat de otros bloques.\n"
+            ) + eval_instructions + pending_info
         else:
             system_prompt += (
-                "\nINSTRUCCIONES PARA EL DESAFÍO:\n"
-                "- Evalúa si la respuesta del estudiante demuestra comprensión correcta del desafío.\n"
-                "- Si la respuesta ES CORRECTA: comienza tu respuesta con exactamente '[CORRECTO]' "
-                "y felicita al estudiante de forma motivadora.\n"
-                "- Si la respuesta NO ES CORRECTA: usa el método socrático. "
-                "Haz preguntas guía, usa analogías, descompón el concepto. "
-                "NO des la respuesta directamente. NO empieces con '[CORRECTO]'.\n"
-                "- Si el estudiante NO ha respondido aún y solo saluda o pregunta algo general, "
+                "\n- Si el estudiante NO ha respondido aún y solo saluda o pregunta algo general, "
                 "presenta el desafío claramente y espera su respuesta.\n"
-            )
+            ) + eval_instructions + pending_info
 
     if shared_summary:
         system_prompt += shared_summary
@@ -322,7 +332,9 @@ async def send_message(
     # ── Process challenge result ───────────────────────────────────────────────
     if current_challenge and current_attempt:
         current_attempt.attempts_count += 1
-        if reply.startswith("[CORRECTO]"):
+        # Detect [CORRECTO] anywhere in the reply (AI may add "¡" or text before the tag)
+        import re as _re
+        if _re.search(r'\[CORRECTO\]', reply, _re.IGNORECASE):
             current_attempt.status = "passed"
             challenge_passed = True
             log.info("Challenge passed: challenge_id=%s user=%s", current_challenge.id[:8], session.user_id[:16])
