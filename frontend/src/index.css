@@ -671,3 +671,29 @@ body {
   animation: fadeSlideIn 0.3s ease;
   z-index: 1000;
 }
+
+/* ─── Metrics Dashboard — dark theme ────────────────────────────────────── */
+.metrics-view {
+  flex: 1;
+  background: #0a0a14;
+  overflow-y: auto;
+  padding: 24px 32px;
+  color: #e2e2f0;
+  min-height: 0;
+}
+
+.metrics-view .section-card {
+  background: #12121f;
+  border-color: rgba(255,255,255,0.09);
+  box-shadow: 0 2px 16px rgba(0,0,0,0.5);
+}
+
+.metrics-view .section-card__title {
+  color: rgba(255,255,255,0.92);
+  border-bottom-color: rgba(255,255,255,0.08);
+}
+
+/* Scrollbar oscuro para la vista de métricas */
+.metrics-view::-webkit-scrollbar { width: 6px; }
+.metrics-view::-webkit-scrollbar-track { background: transparent; }
+.metrics-view::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 3px; }

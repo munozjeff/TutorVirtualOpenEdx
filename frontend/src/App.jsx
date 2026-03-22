@@ -50,9 +50,10 @@ export default function App() {
                         ))}
                     </nav>
                 </header>
-                <div className="panel-content" style={{ overflowY: 'auto', flex: 1 }}>
-                    {adminTab === 'lti' ? <RegistrationPanel /> : <MetricsDashboard />}
-                </div>
+                {adminTab === 'lti'
+                    ? <div className="panel-content" style={{ overflowY: 'auto', flex: 1 }}><RegistrationPanel /></div>
+                    : <div className="metrics-view"><MetricsDashboard /></div>
+                }
             </div>
         )
     }

@@ -7,71 +7,103 @@ import {
 
 const api = axios.create({ baseURL: '', withCredentials: true })
 
+// ── Paleta de colores ────────────────────────────────────────────────────────
+const C = {
+    indigo: '#818cf8', indigoDim: 'rgba(129,140,248,0.15)',
+    green:  '#4ade80', greenDim:  'rgba(74,222,128,0.15)',
+    amber:  '#fbbf24', amberDim:  'rgba(251,191,36,0.15)',
+    orange: '#fb923c', orangeDim: 'rgba(251,146,60,0.15)',
+    red:    '#f87171', redDim:    'rgba(248,113,113,0.15)',
+    blue:   '#38bdf8', blueDim:   'rgba(56,189,248,0.15)',
+    violet: '#c084fc', violetDim: 'rgba(192,132,252,0.15)',
+    muted:  'rgba(255,255,255,0.38)',
+    dim:    'rgba(255,255,255,0.14)',
+    card:   'rgba(255,255,255,0.04)',
+    border: 'rgba(255,255,255,0.09)',
+}
+
 // ── Gauge circular SVG ──────────────────────────────────────────────────────
 function Gauge({ value, max = 100, label, unit = '%', color }) {
     const pct = Math.min((value || 0) / max, 1)
-    const r = 36, circ = 2 * Math.PI * r
-    const dash = pct * circ * 0.75
-    const col = color || (pct > 0.85 ? '#ef4444' : pct > 0.6 ? '#f59e0b' : '#6366f1')
+    const r = 42, circ = 2 * Math.PI * r
+    const arcLen = 0.75 * circ           // 270° de arco
+    const filled = arcLen * pct
+    const col = color || (pct > 0.85 ? C.red : pct > 0.60 ? C.amber : C.green)
     const display = typeof value === 'number'
-        ? (Number.isInteger(value) ? value : value.toFixed(1))
+        ? (value % 1 === 0 ? value : value.toFixed(1))
         : (value ?? 0)
 
     return (
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
-            <svg width={100} height={100} viewBox="0 0 100 100">
-                <circle cx={50} cy={50} r={r} fill="none" stroke="rgba(255,255,255,0.07)"
-                    strokeWidth={10} strokeDasharray={`${circ * 0.75} ${circ * 0.25}`}
-                    strokeDashoffset={circ * 0.375} strokeLinecap="round" />
-                <circle cx={50} cy={50} r={r} fill="none" stroke={col}
-                    strokeWidth={10} strokeDasharray={`${dash} ${circ - dash + circ * 0.25}`}
-                    strokeDashoffset={circ * 0.375} strokeLinecap="round"
-                    style={{ transition: 'stroke-dasharray 0.5s ease' }} />
-                <text x={50} y={46} textAnchor="middle" fill="white" fontSize={14} fontWeight={700}>{display}</text>
-                <text x={50} y={60} textAnchor="middle" fill="rgba(255,255,255,0.5)" fontSize={9}>{unit}</text>
-            </svg>
-            <span style={{ fontSize: 11, color: 'var(--text-muted)', textAlign: 'center' }}>{label}</span>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, flex: 1, minWidth: 130 }}>
+            <div style={{ position: 'relative', width: 120, height: 120 }}>
+                <svg width={120} height={120} viewBox="0 0 100 100">
+                    {/* Sombra suave */}
+                    <circle cx={50} cy={50} r={r} fill="none"
+                        stroke="rgba(0,0,0,0.4)" strokeWidth={13}
+                        strokeDasharray={`${arcLen} ${circ - arcLen}`}
+                        transform="rotate(135 50 50)" strokeLinecap="round" />
+                    {/* Track (fondo del arco) */}
+                    <circle cx={50} cy={50} r={r} fill="none"
+                        stroke="rgba(255,255,255,0.10)" strokeWidth={11}
+                        strokeDasharray={`${arcLen} ${circ - arcLen}`}
+                        transform="rotate(135 50 50)" strokeLinecap="round" />
+                    {/* Valor */}
+                    <circle cx={50} cy={50} r={r} fill="none"
+                        stroke={col} strokeWidth={11}
+                        strokeDasharray={`${filled} ${circ - filled}`}
+                        transform="rotate(135 50 50)" strokeLinecap="round"
+                        style={{ transition: 'stroke-dasharray 0.6s ease', filter: `drop-shadow(0 0 6px ${col}88)` }} />
+                    {/* Valor central */}
+                    <text x={50} y={47} textAnchor="middle" fill="white" fontSize={16} fontWeight={800} letterSpacing={-0.5}>{display}</text>
+                    <text x={50} y={62} textAnchor="middle" fill={C.muted} fontSize={10}>{unit}</text>
+                </svg>
+            </div>
+            <span style={{ fontSize: 11, color: C.muted, textAlign: 'center', lineHeight: 1.3 }}>{label}</span>
         </div>
     )
 }
 
 // ── KPI Card ────────────────────────────────────────────────────────────────
-function KpiCard({ label, value, unit, sub, color = '#6366f1', icon }) {
+function KpiCard({ label, value, unit, sub, color = C.indigo, icon }) {
     return (
         <div style={{
-            background: 'var(--bg-elevated)', borderRadius: 10,
-            border: '1px solid var(--border)', padding: '14px 18px',
-            display: 'flex', flexDirection: 'column', gap: 4, flex: 1, minWidth: 120,
+            background: C.card, borderRadius: 12,
+            border: `1px solid ${C.border}`, padding: '16px 20px',
+            display: 'flex', flexDirection: 'column', gap: 5, flex: 1, minWidth: 130,
         }}>
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
-                {icon && <span>{icon}</span>}{label}
+            <div style={{ fontSize: 11, color: C.muted, display: 'flex', alignItems: 'center', gap: 6, fontWeight: 500 }}>
+                {icon && <span style={{ fontSize: 13 }}>{icon}</span>}{label}
             </div>
-            <div style={{ fontSize: 26, fontWeight: 700, color, letterSpacing: -1 }}>
+            <div style={{ fontSize: 30, fontWeight: 800, color, letterSpacing: -1, lineHeight: 1 }}>
                 {value ?? '—'}
-                {unit && <span style={{ fontSize: 13, fontWeight: 400, color: 'var(--text-muted)', marginLeft: 3 }}>{unit}</span>}
+                {unit && <span style={{ fontSize: 14, fontWeight: 400, color: C.muted, marginLeft: 4 }}>{unit}</span>}
             </div>
-            {sub && <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>{sub}</div>}
+            {sub && <div style={{ fontSize: 10, color: C.dim }}>{sub}</div>}
         </div>
     )
 }
 
 function StatusBadge({ code }) {
-    const color = code < 300 ? '#4ade80' : code < 400 ? '#fbbf24' : '#f87171'
-    return <span style={{ fontSize: 10, color, fontWeight: 700, background: `${color}22`, padding: '1px 6px', borderRadius: 4 }}>{code}</span>
+    const color = code < 300 ? C.green : code < 400 ? C.amber : C.red
+    return <span style={{ fontSize: 10, color, fontWeight: 700, background: `${color}22`, padding: '2px 7px', borderRadius: 4, letterSpacing: 0.3 }}>{code}</span>
 }
 
 function CustomTooltip({ active, payload, label }) {
     if (!active || !payload?.length) return null
     return (
-        <div style={{ background: '#1e1e2e', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6, padding: '8px 12px', fontSize: 11 }}>
-            <div style={{ color: 'var(--text-muted)', marginBottom: 4 }}>{label}</div>
-            {payload.map(p => <div key={p.name} style={{ color: p.color }}>{p.name}: <strong>{p.value}</strong></div>)}
+        <div style={{ background: '#1a1a2e', border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 14px', fontSize: 11, boxShadow: '0 4px 20px rgba(0,0,0,0.5)' }}>
+            <div style={{ color: C.muted, marginBottom: 5, fontWeight: 600 }}>{label}</div>
+            {payload.map(p => <div key={p.name} style={{ color: p.color, marginTop: 2 }}>{p.name}: <strong>{p.value}</strong></div>)}
         </div>
     )
 }
 
-const latColor = ms => ms > 1000 ? '#ef4444' : ms > 300 ? '#f59e0b' : '#4ade80'
-const statPill = { fontSize: 11, color: 'var(--text-muted)', background: 'rgba(255,255,255,0.04)', border: '1px solid var(--border)', borderRadius: 6, padding: '3px 10px' }
+const latColor = ms => ms > 1000 ? C.red : ms > 300 ? C.amber : C.green
+const statPill = {
+    fontSize: 11, color: 'rgba(255,255,255,0.7)',
+    background: 'rgba(255,255,255,0.07)', border: `1px solid ${C.border}`,
+    borderRadius: 6, padding: '4px 12px', fontWeight: 500,
+}
 
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -698,8 +730,8 @@ export default function MetricsDashboard() {
         return () => clearInterval(id)
     }, [autoRefresh, fetchData])
 
-    if (loading) return <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}>Cargando métricas…</div>
-    if (!data) return <div style={{ padding: 40, textAlign: 'center', color: '#f87171' }}>No se pudieron obtener las métricas.</div>
+    if (loading) return <div style={{ padding: 60, textAlign: 'center', color: C.muted, fontSize: 14 }}>Cargando métricas…</div>
+    if (!data) return <div style={{ padding: 60, textAlign: 'center', color: C.red }}>No se pudieron obtener las métricas.</div>
 
     const { system, summary_60s: s60, summary_300s: s300, endpoints, timeline, sessions,
             resource_history: resHistory = [], resource_peaks: resPeaks = {} } = data
@@ -710,101 +742,115 @@ export default function MetricsDashboard() {
         'Lat ms': t.avg_ms,
     }))
 
+    const sectionTitle = (txt, sub) => (
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 16, paddingBottom: 10, borderBottom: `1px solid ${C.border}` }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: 'rgba(255,255,255,0.9)', textTransform: 'uppercase', letterSpacing: 0.6 }}>{txt}</span>
+            {sub && <span style={{ fontSize: 11, color: C.muted, fontWeight: 400 }}>{sub}</span>}
+        </div>
+    )
+
     return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 18, maxWidth: 1400, margin: '0 auto' }}>
 
             {/* Header */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <div>
-                    <div style={{ fontSize: 16, fontWeight: 700 }}>Métricas del Sistema</div>
-                    {lastUpdate && <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2 }}>Actualizado: {lastUpdate.toLocaleTimeString()}</div>}
+                    <div style={{ fontSize: 20, fontWeight: 800, color: 'white', letterSpacing: -0.5 }}>Métricas del Sistema</div>
+                    {lastUpdate && <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>Actualizado: {lastUpdate.toLocaleTimeString()}</div>}
                 </div>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                    <label style={{ fontSize: 11, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer' }}>
+                    <label style={{ fontSize: 11, color: C.muted, display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
                         <input type="checkbox" checked={autoRefresh} onChange={e => setAutoRefresh(e.target.checked)} />
                         Auto-refresh 5s
                     </label>
                     <a href="/api/metrics/export/resource-history" download
-                        style={{ padding: '5px 10px', fontSize: 11, borderRadius: 6, border: '1px solid rgba(74,222,128,0.3)', background: 'rgba(74,222,128,0.08)', color: '#4ade80', textDecoration: 'none' }}
-                        title="Descargar historial de recursos (CSV)">
+                        style={{ padding: '6px 12px', fontSize: 11, borderRadius: 6, border: `1px solid ${C.greenDim.replace('0.15', '0.4')}`, background: C.greenDim, color: C.green, textDecoration: 'none', fontWeight: 600 }}>
                         ⬇ Recursos CSV
                     </a>
-                    <button onClick={fetchData} style={{ padding: '5px 12px', fontSize: 11, borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer' }}>↻ Actualizar</button>
+                    <button onClick={fetchData} style={{ padding: '6px 14px', fontSize: 11, borderRadius: 6, border: `1px solid ${C.border}`, background: C.card, color: 'rgba(255,255,255,0.7)', cursor: 'pointer', fontWeight: 600 }}>↻ Actualizar</button>
                 </div>
             </div>
 
-            {/* KPIs de requests */}
+            {/* KPIs de requests — 2 filas, grid completo */}
             <div className="section-card">
-                <div className="section-card__title" style={{ marginBottom: 12 }}>Requests — último minuto</div>
-                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                    <KpiCard label="Total requests" value={s60.total} icon="📊" color="#6366f1" />
-                    <KpiCard label="Req/segundo" value={s60.rps} icon="⚡" color="#4ade80" />
-                    <KpiCard label="Latencia promedio" value={s60.avg_ms} unit="ms" icon="⏱" color="#fbbf24" />
-                    <KpiCard label="Latencia p95" value={s60.p95_ms} unit="ms" icon="📈" color="#f59e0b" />
-                    <KpiCard label="Latencia p99" value={s60.p99_ms} unit="ms" icon="🎯" color="#ef4444" sub="peor 1% de requests" />
-                    <KpiCard label="Tasa de error" value={s60.error_rate} unit="%" icon="❌" color={s60.error_rate > 5 ? '#ef4444' : '#4ade80'} sub={`${s60.errors} errores`} />
+                {sectionTitle('Requests', 'último minuto')}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 10 }}>
+                    <KpiCard label="Total requests" value={s60.total} icon="📊" color={C.indigo} />
+                    <KpiCard label="Req/segundo" value={s60.rps} icon="⚡" color={C.green} />
+                    <KpiCard label="Latencia prom" value={s60.avg_ms} unit="ms" icon="⏱" color={C.amber} />
+                    <KpiCard label="Latencia p95" value={s60.p95_ms} unit="ms" icon="📈" color={C.orange} />
+                    <KpiCard label="Latencia p99" value={s60.p99_ms} unit="ms" icon="🎯" color={C.red} sub="peor 1% de req" />
+                    <KpiCard label="Tasa de error" value={s60.error_rate} unit="%" icon="❌" color={s60.error_rate > 5 ? C.red : C.green} sub={`${s60.errors} errores`} />
                 </div>
             </div>
 
-            {/* Gauges del sistema */}
+            {/* Gauges + Picos + Historial en una sola card */}
             <div className="section-card">
-                <div className="section-card__title" style={{ marginBottom: 16 }}>Recursos del servidor — tiempo real</div>
-                <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', justifyContent: 'space-around' }}>
-                    <Gauge value={system.cpu.percent} label={`CPU — ${system.cpu.count} núcleos`} />
-                    <Gauge value={system.ram.percent} label={`RAM — ${system.ram.used_mb} / ${system.ram.total_mb} MB`} />
-                    <Gauge value={system.disk.percent} label={`Disco — ${system.disk.used_gb} / ${system.disk.total_gb} GB`} color="#a78bfa" />
-                    <Gauge value={system.network.active_connections} max={100} unit="conn" label="Conexiones activas" color="#38bdf8" />
+                {sectionTitle('Recursos del servidor', 'tiempo real')}
+
+                {/* Gauges */}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16, marginBottom: 24 }}>
+                    <Gauge value={system.cpu.percent} label={`CPU · ${system.cpu.count} núcleos`} />
+                    <Gauge value={system.ram.percent} label={`RAM · ${system.ram.used_mb} / ${system.ram.total_mb} MB`} />
+                    <Gauge value={system.disk.percent} label={`Disco · ${system.disk.used_gb} / ${system.disk.total_gb} GB`} color={C.violet} />
+                    <Gauge value={system.network.active_connections} max={100} unit="conn" label="Conexiones activas" color={C.blue} />
                 </div>
-                <div style={{ display: 'flex', gap: 10, marginTop: 14, flexWrap: 'wrap' }}>
-                    <div style={statPill}>RAM libre: <b>{system.ram.available_mb} MB</b></div>
-                    <div style={statPill}>Disco libre: <b>{system.disk.free_gb} GB</b></div>
-                    <div style={statPill}>Req (5 min): <b>{s300.total}</b></div>
-                    <div style={statPill}>RPS (5 min): <b>{s300.rps}</b></div>
+
+                {/* Info pills */}
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 20 }}>
+                    {[
+                        ['RAM libre', `${system.ram.available_mb} MB`],
+                        ['Disco libre', `${system.disk.free_gb} GB`],
+                        ['Req 5 min', s300.total],
+                        ['RPS 5 min', s300.rps],
+                    ].map(([l, v]) => (
+                        <div key={l} style={statPill}>{l}: <b style={{ color: 'white' }}>{v}</b></div>
+                    ))}
                 </div>
 
                 {/* Picos — últimos 5 minutos */}
                 {resPeaks.cpu && (
                     <>
-                        <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-muted)', margin: '16px 0 8px', letterSpacing: 1 }}>
-                            PICOS — ÚLTIMOS 5 MINUTOS ({resPeaks.samples} muestras)
+                        <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, margin: '4px 0 10px', letterSpacing: 1 }}>
+                            PICOS — ÚLTIMOS 5 MIN ({resPeaks.samples} muestras)
                         </div>
-                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 8 }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 20 }}>
                             {[
-                                { l: 'CPU pico', v: `${resPeaks.cpu.peak}%`, s: `prom ${resPeaks.cpu.avg}% · mín ${resPeaks.cpu.min}%`, c: resPeaks.cpu.peak > 80 ? '#f87171' : resPeaks.cpu.peak > 50 ? '#fbbf24' : '#4ade80' },
-                                { l: 'RAM pico', v: `${resPeaks.ram_pct.peak}%`, s: `${resPeaks.ram_mb.peak} MB · prom ${resPeaks.ram_pct.avg}%`, c: resPeaks.ram_pct.peak > 85 ? '#f87171' : resPeaks.ram_pct.peak > 65 ? '#fbbf24' : '#4ade80' },
-                                { l: 'RAM pico (MB)', v: `${resPeaks.ram_mb.peak} MB`, s: `prom ${resPeaks.ram_mb.avg} MB · mín ${resPeaks.ram_mb.min} MB`, c: '#a78bfa' },
-                                { l: 'Disco pico', v: `${resPeaks.disk_pct.peak}%`, s: `prom ${resPeaks.disk_pct.avg}%`, c: resPeaks.disk_pct.peak > 90 ? '#f87171' : '#38bdf8' },
+                                { l: 'CPU pico', v: `${resPeaks.cpu.peak}%`, s: `prom ${resPeaks.cpu.avg}%  ·  mín ${resPeaks.cpu.min}%`, c: resPeaks.cpu.peak > 80 ? C.red : resPeaks.cpu.peak > 50 ? C.amber : C.green },
+                                { l: 'RAM pico', v: `${resPeaks.ram_pct.peak}%`, s: `${resPeaks.ram_mb.peak} MB  ·  prom ${resPeaks.ram_pct.avg}%`, c: resPeaks.ram_pct.peak > 85 ? C.red : resPeaks.ram_pct.peak > 65 ? C.amber : C.green },
+                                { l: 'RAM pico (MB)', v: `${resPeaks.ram_mb.peak} MB`, s: `prom ${resPeaks.ram_mb.avg} MB  ·  mín ${resPeaks.ram_mb.min}`, c: C.violet },
+                                { l: 'Disco pico', v: `${resPeaks.disk_pct.peak}%`, s: `prom ${resPeaks.disk_pct.avg}%`, c: resPeaks.disk_pct.peak > 90 ? C.red : C.blue },
                             ].map(({ l, v, s, c }) => (
-                                <div key={l} style={{ background: 'rgba(0,0,0,0.25)', borderRadius: 8, padding: '10px 12px', borderLeft: `3px solid ${c}` }}>
-                                    <div style={{ fontSize: 9, color: 'var(--text-muted)', marginBottom: 3 }}>{l}</div>
-                                    <div style={{ fontSize: 20, fontWeight: 700, color: c, lineHeight: 1 }}>{v}</div>
-                                    <div style={{ fontSize: 9, color: 'rgba(255,255,255,0.3)', marginTop: 4 }}>{s}</div>
+                                <div key={l} style={{ background: 'rgba(0,0,0,0.3)', borderRadius: 10, padding: '12px 14px', borderLeft: `3px solid ${c}` }}>
+                                    <div style={{ fontSize: 10, color: C.muted, marginBottom: 4, fontWeight: 600 }}>{l}</div>
+                                    <div style={{ fontSize: 22, fontWeight: 800, color: c, lineHeight: 1 }}>{v}</div>
+                                    <div style={{ fontSize: 10, color: C.dim, marginTop: 5 }}>{s}</div>
                                 </div>
                             ))}
                         </div>
                     </>
                 )}
 
-                {/* Historial de recursos — gráfica de líneas */}
+                {/* Historial de recursos — gráfica */}
                 {resHistory.length > 0 && (
                     <>
-                        <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-muted)', margin: '16px 0 8px', letterSpacing: 1 }}>
+                        <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, margin: '4px 0 10px', letterSpacing: 1 }}>
                             EVOLUCIÓN DE RECURSOS (últimos 5 min)
                         </div>
-                        <ResponsiveContainer width="100%" height={160}>
+                        <ResponsiveContainer width="100%" height={180}>
                             <LineChart
                                 data={resHistory.map((s, i) => ({
-                                    name: i % Math.max(1, Math.floor(resHistory.length / 6)) === 0
+                                    name: i % Math.max(1, Math.floor(resHistory.length / 8)) === 0
                                         ? `${Math.round((resHistory.length - i) * 5 / 60)}min`
                                         : '',
                                     cpu: s.cpu,
                                     ram_pct: s.ram_pct,
                                     disk_pct: s.disk_pct,
                                 }))}
-                                margin={{ top: 4, right: 10, left: -20, bottom: 0 }}
+                                margin={{ top: 4, right: 10, left: -10, bottom: 0 }}
                             >
                                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
-                                <XAxis dataKey="name" tick={{ fill: 'rgba(255,255,255,0.3)', fontSize: 9 }} />
+                                <XAxis dataKey="name" tick={{ fill: C.muted, fontSize: 10 }} />
                                 <YAxis domain={[0, 100]} unit="%" tick={{ fill: 'rgba(255,255,255,0.3)', fontSize: 9 }} />
                                 <Tooltip
                                     contentStyle={{ background: '#1a1a2e', border: '1px solid rgba(255,255,255,0.1)', fontSize: 10 }}
@@ -815,18 +861,121 @@ export default function MetricsDashboard() {
                                 <Line type="monotone" dataKey="disk_pct" stroke="#a78bfa" dot={false} strokeWidth={1.5} name="disk_pct" strokeDasharray="4 2" />
                             </LineChart>
                         </ResponsiveContainer>
-                        <div style={{ display: 'flex', gap: 14, marginTop: 4, fontSize: 10, color: 'var(--text-muted)' }}>
-                            <span><span style={{ color: '#6366f1' }}>●</span> CPU %</span>
-                            <span><span style={{ color: '#fbbf24' }}>●</span> RAM %</span>
-                            <span><span style={{ color: '#a78bfa' }}>- -</span> Disco %</span>
+                        <div style={{ display: 'flex', gap: 14, marginTop: 6, fontSize: 10, color: C.muted }}>
+                            <span><span style={{ color: C.indigo }}>●</span> CPU %</span>
+                            <span><span style={{ color: C.amber }}>●</span> RAM %</span>
+                            <span><span style={{ color: C.violet }}>- -</span> Disco %</span>
                         </div>
                     </>
                 )}
                 {resHistory.length === 0 && (
-                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 12, textAlign: 'center' }}>
+                    <div style={{ fontSize: 11, color: C.muted, marginTop: 12, textAlign: 'center' }}>
                         El historial se acumula cada 5 s — espera unos segundos…
                     </div>
                 )}
+            </div>
+
+            {/* Actividad + Endpoints en grid de 2 columnas */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18 }}>
+                {/* Timeline */}
+                <div className="section-card">
+                    {sectionTitle('Actividad', 'últimos 5 minutos')}
+                    <ResponsiveContainer width="100%" height={200}>
+                        <LineChart data={timelineData} margin={{ top: 4, right: 10, left: -10, bottom: 0 }}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+                            <XAxis dataKey="name" tick={{ fill: C.muted, fontSize: 9 }} />
+                            <YAxis yAxisId="req" tick={{ fill: C.muted, fontSize: 9 }} />
+                            <YAxis yAxisId="lat" orientation="right" tick={{ fill: C.muted, fontSize: 9 }} />
+                            <Tooltip content={<CustomTooltip />} />
+                            <Legend wrapperStyle={{ fontSize: 11, paddingTop: 8, color: 'rgba(255,255,255,0.6)' }} />
+                            <Line yAxisId="req" type="monotone" dataKey="Req" stroke={C.indigo} strokeWidth={2.5} dot={false} />
+                            <Line yAxisId="lat" type="monotone" dataKey="Lat ms" stroke={C.amber} strokeWidth={2.5} dot={false} />
+                        </LineChart>
+                    </ResponsiveContainer>
+                </div>
+
+                {/* Latencia por endpoint */}
+                {endpoints && endpoints.length > 0 && (
+                    <div className="section-card">
+                        {sectionTitle('Latencia por endpoint', 'últimos 5 min')}
+                        <ResponsiveContainer width="100%" height={Math.max(160, Math.min(endpoints.length, 8) * 32)}>
+                            <BarChart data={endpoints.slice(0, 8)} layout="vertical" margin={{ top: 0, right: 50, left: 0, bottom: 0 }}>
+                                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" horizontal={false} />
+                                <XAxis type="number" tick={{ fill: C.muted, fontSize: 9 }} unit="ms" />
+                                <YAxis type="category" dataKey="endpoint" width={130} tick={{ fill: 'rgba(255,255,255,0.6)', fontSize: 9 }} />
+                                <Tooltip content={<CustomTooltip />} />
+                                <Bar dataKey="avg_ms" name="Prom ms" fill={C.indigo} radius={[0, 4, 4, 0]} />
+                                <Bar dataKey="p95_ms" name="P95 ms" fill={C.orange} radius={[0, 4, 4, 0]} />
+                            </BarChart>
+                        </ResponsiveContainer>
+                    </div>
+                )}
+            </div>
+
+            {/* Tabla endpoints + requests recientes en grid */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18 }}>
+                {endpoints && endpoints.length > 0 && (
+                    <div className="section-card">
+                        {sectionTitle('Endpoints', 'detalle')}
+                        <div style={{ overflowX: 'auto' }}>
+                            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                                <thead>
+                                    <tr style={{ borderBottom: `1px solid ${C.border}` }}>
+                                        {['Endpoint', 'Req', 'Prom', 'P95', 'Err'].map(h => (
+                                            <th key={h} style={{ padding: '7px 8px', textAlign: 'left', color: C.muted, fontWeight: 700 }}>{h}</th>
+                                        ))}
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {endpoints.map((ep, i) => (
+                                        <tr key={i} style={{ borderBottom: `1px solid ${C.border}` }}>
+                                            <td style={{ padding: '7px 8px', fontFamily: 'monospace', color: C.violet, fontSize: 10 }}>{ep.endpoint}</td>
+                                            <td style={{ padding: '7px 8px', color: 'rgba(255,255,255,0.7)', fontWeight: 600 }}>{ep.count}</td>
+                                            <td style={{ padding: '7px 8px', color: latColor(ep.avg_ms), fontWeight: 600 }}>{ep.avg_ms} ms</td>
+                                            <td style={{ padding: '7px 8px', color: latColor(ep.p95_ms) }}>{ep.p95_ms} ms</td>
+                                            <td style={{ padding: '7px 8px', color: ep.errors > 0 ? C.red : C.muted }}>{ep.errors}</td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                )}
+
+                {/* Últimos requests */}
+                {recent.length > 0 && (
+                    <div className="section-card">
+                        {sectionTitle('Últimos requests', '2 minutos')}
+                        <div style={{ overflowX: 'auto' }}>
+                            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                                <thead>
+                                    <tr style={{ borderBottom: `1px solid ${C.border}` }}>
+                                        {['Hora', 'Método', 'Ruta', 'Estado', 'ms', 'Tipo'].map(h => (
+                                            <th key={h} style={{ padding: '7px 8px', textAlign: 'left', color: C.muted, fontWeight: 700 }}>{h}</th>
+                                        ))}
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {recent.map((r, i) => (
+                                        <tr key={i} style={{ borderBottom: `1px solid ${C.border}`, opacity: r.is_stress ? 0.65 : 1 }}>
+                                            <td style={{ padding: '6px 8px', color: C.muted, fontSize: 10 }}>{new Date(r.timestamp * 1000).toLocaleTimeString()}</td>
+                                            <td style={{ padding: '6px 8px', color: C.blue, fontWeight: 700, fontSize: 10 }}>{r.method}</td>
+                                            <td style={{ padding: '6px 8px', fontFamily: 'monospace', color: 'rgba(255,255,255,0.65)', fontSize: 10, maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.path}</td>
+                                            <td style={{ padding: '6px 8px' }}><StatusBadge code={r.status_code} /></td>
+                                            <td style={{ padding: '6px 8px', color: latColor(r.duration_ms), fontWeight: 600 }}>{r.duration_ms}</td>
+                                            <td style={{ padding: '6px 8px' }}>
+                                                {r.is_stress
+                                                    ? <span style={{ fontSize: 9, color: C.red, background: C.redDim, padding: '2px 6px', borderRadius: 4, fontWeight: 600 }}>🔥 stress</span>
+                                                    : <span style={{ fontSize: 9, color: C.green, background: C.greenDim, padding: '2px 6px', borderRadius: 4, fontWeight: 600 }}>real</span>
+                                                }
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                        </table>
+                    </div>
+                </div>
+            )}
             </div>
 
             {/* Sección de sesiones */}
@@ -837,99 +986,6 @@ export default function MetricsDashboard() {
 
             {/* Stress Test */}
             <StressTestPanel />
-
-            {/* Timeline */}
-            <div className="section-card">
-                <div className="section-card__title" style={{ marginBottom: 12 }}>Actividad — últimos 5 minutos</div>
-                <ResponsiveContainer width="100%" height={200}>
-                    <LineChart data={timelineData} margin={{ top: 4, right: 10, left: -20, bottom: 0 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
-                        <XAxis dataKey="name" tick={{ fill: 'rgba(255,255,255,0.3)', fontSize: 9 }} />
-                        <YAxis yAxisId="req" tick={{ fill: 'rgba(255,255,255,0.3)', fontSize: 9 }} />
-                        <YAxis yAxisId="lat" orientation="right" tick={{ fill: 'rgba(255,255,255,0.3)', fontSize: 9 }} />
-                        <Tooltip content={<CustomTooltip />} />
-                        <Legend wrapperStyle={{ fontSize: 11, paddingTop: 8 }} />
-                        <Line yAxisId="req" type="monotone" dataKey="Req" stroke="#6366f1" strokeWidth={2} dot={false} />
-                        <Line yAxisId="lat" type="monotone" dataKey="Lat ms" stroke="#fbbf24" strokeWidth={2} dot={false} />
-                    </LineChart>
-                </ResponsiveContainer>
-            </div>
-
-            {/* Latencia por endpoint */}
-            {endpoints && endpoints.length > 0 && (
-                <div className="section-card">
-                    <div className="section-card__title" style={{ marginBottom: 12 }}>Latencia por endpoint — últimos 5 minutos</div>
-                    <ResponsiveContainer width="100%" height={Math.max(160, endpoints.length * 36)}>
-                        <BarChart data={endpoints.slice(0, 10)} layout="vertical" margin={{ top: 0, right: 60, left: 10, bottom: 0 }}>
-                            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" horizontal={false} />
-                            <XAxis type="number" tick={{ fill: 'rgba(255,255,255,0.3)', fontSize: 9 }} unit="ms" />
-                            <YAxis type="category" dataKey="endpoint" width={140} tick={{ fill: 'rgba(255,255,255,0.5)', fontSize: 9 }} />
-                            <Tooltip content={<CustomTooltip />} />
-                            <Bar dataKey="avg_ms" name="Prom ms" fill="#6366f1" radius={[0, 3, 3, 0]} />
-                            <Bar dataKey="p95_ms" name="P95 ms" fill="#f59e0b" radius={[0, 3, 3, 0]} />
-                        </BarChart>
-                    </ResponsiveContainer>
-                    <div style={{ overflowX: 'auto', marginTop: 16 }}>
-                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
-                            <thead>
-                                <tr style={{ borderBottom: '1px solid var(--border)' }}>
-                                    {['Endpoint', 'Requests', 'Prom ms', 'P95 ms', 'Mín ms', 'Máx ms', 'Errores'].map(h => (
-                                        <th key={h} style={{ padding: '6px 10px', textAlign: 'left', color: 'var(--text-muted)', fontWeight: 600 }}>{h}</th>
-                                    ))}
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {endpoints.map((ep, i) => (
-                                    <tr key={i} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-                                        <td style={{ padding: '6px 10px', fontFamily: 'monospace', color: '#a78bfa' }}>{ep.endpoint}</td>
-                                        <td style={{ padding: '6px 10px', color: 'var(--text-secondary)' }}>{ep.count}</td>
-                                        <td style={{ padding: '6px 10px', color: latColor(ep.avg_ms) }}>{ep.avg_ms}</td>
-                                        <td style={{ padding: '6px 10px', color: latColor(ep.p95_ms) }}>{ep.p95_ms}</td>
-                                        <td style={{ padding: '6px 10px', color: '#4ade80' }}>{ep.min_ms}</td>
-                                        <td style={{ padding: '6px 10px', color: '#f87171' }}>{ep.max_ms}</td>
-                                        <td style={{ padding: '6px 10px', color: ep.errors > 0 ? '#f87171' : 'var(--text-muted)' }}>{ep.errors}</td>
-                                    </tr>
-                                ))}
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            )}
-
-            {/* Últimos requests */}
-            {recent.length > 0 && (
-                <div className="section-card">
-                    <div className="section-card__title" style={{ marginBottom: 12 }}>Últimos requests</div>
-                    <div style={{ overflowX: 'auto' }}>
-                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
-                            <thead>
-                                <tr style={{ borderBottom: '1px solid var(--border)' }}>
-                                    {['Hora', 'Método', 'Endpoint', 'Estado', 'Latencia', 'Tipo'].map(h => (
-                                        <th key={h} style={{ padding: '6px 10px', textAlign: 'left', color: 'var(--text-muted)', fontWeight: 600 }}>{h}</th>
-                                    ))}
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {recent.map((r, i) => (
-                                    <tr key={i} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)', opacity: r.is_stress ? 0.7 : 1 }}>
-                                        <td style={{ padding: '5px 10px', color: 'var(--text-muted)' }}>{new Date(r.timestamp * 1000).toLocaleTimeString()}</td>
-                                        <td style={{ padding: '5px 10px', color: '#38bdf8', fontWeight: 600 }}>{r.method}</td>
-                                        <td style={{ padding: '5px 10px', fontFamily: 'monospace', color: 'var(--text-secondary)' }}>{r.path}</td>
-                                        <td style={{ padding: '5px 10px' }}><StatusBadge code={r.status_code} /></td>
-                                        <td style={{ padding: '5px 10px', color: latColor(r.duration_ms) }}>{r.duration_ms} ms</td>
-                                        <td style={{ padding: '5px 10px' }}>
-                                            {r.is_stress
-                                                ? <span style={{ fontSize: 9, color: '#ef4444', background: 'rgba(239,68,68,0.1)', padding: '1px 6px', borderRadius: 4 }}>🔥 stress</span>
-                                                : <span style={{ fontSize: 9, color: '#4ade80', background: 'rgba(74,222,128,0.1)', padding: '1px 6px', borderRadius: 4 }}>real</span>
-                                            }
-                                        </td>
-                                    </tr>
-                                ))}
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            )}
         </div>
     )
 }
