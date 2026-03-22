@@ -79,15 +79,21 @@ const statPill = { fontSize: 11, color: 'var(--text-muted)', background: 'rgba(2
 // ══════════════════════════════════════════════════════════════════════════════
 function StressTestPanel() {
     const [endpoints, setEndpoints] = useState(['/api/health'])
+    const [questions, setQuestions] = useState([])
     const [form, setForm] = useState({
+        scenario: 'basic',
         endpoint: '/api/health', method: 'GET',
-        concurrent_users: 10, duration_seconds: 30, ramp_up_seconds: 5,
+        concurrent_users: 10, duration_seconds: 30,
+        ramp_up_seconds: 5, think_time_ms: 500,
     })
-    const [state, setState] = useState({ status: 'idle', progress: 0, active_users: 0, stats: {}, config: {} })
+    const [state, setState] = useState({ status: 'idle', progress: 0, active_users: 0, stats: {}, config: {}, sessions_ready: 0 })
+    const [preparing, setPreparing] = useState(false)
+    const [prepareMsg, setPrepareMsg] = useState(null)
     const pollRef = useRef(null)
 
     useEffect(() => {
         api.get('/api/metrics/stress-test/endpoints').then(r => setEndpoints(r.data)).catch(() => {})
+        api.get('/api/metrics/stress-test/questions').then(r => setQuestions(r.data)).catch(() => {})
         pollStatus()
     }, [])
 
@@ -99,6 +105,20 @@ function StressTestPanel() {
                 pollRef.current = setTimeout(pollStatus, 800)
             }
         } catch {}
+    }
+
+    const prepare = async () => {
+        setPreparing(true)
+        setPrepareMsg(null)
+        try {
+            const r = await api.post(`/api/metrics/stress-test/prepare?n=${form.concurrent_users}`)
+            setPrepareMsg({ ok: true, text: `✅ ${r.data.created} sesiones creadas en "${r.data.instance}" — ${r.data.questions_pool} preguntas listas` })
+            pollStatus()
+        } catch (e) {
+            setPrepareMsg({ ok: false, text: '❌ ' + (e.response?.data?.detail || 'Error al preparar sesiones') })
+        } finally {
+            setPreparing(false)
+        }
     }
 
     const start = async () => {
@@ -116,55 +136,117 @@ function StressTestPanel() {
         setTimeout(pollStatus, 300)
     }
 
+    const cleanup = async () => {
+        await api.post('/api/metrics/stress-test/cleanup')
+        setPrepareMsg(null)
+        pollStatus()
+    }
+
     const setField = (k, v) => setForm(f => ({ ...f, [k]: v }))
     const isRunning = state.status === 'running'
     const isDone = state.status === 'done' || state.status === 'stopped'
     const pct = Math.round((state.progress || 0) * 100)
     const s = state.stats || {}
+    const isRealistic = form.scenario === 'realistic'
+    const sessionsReady = (state.sessions_ready || 0) > 0
+    const canStart = !isRunning && (!isRealistic || sessionsReady)
 
     return (
         <div className="section-card" style={{ border: '1px solid rgba(239,68,68,0.3)', background: 'rgba(239,68,68,0.03)' }}>
             <div className="section-card__title" style={{ marginBottom: 14 }}>
                 🔥 Prueba de Estrés
                 <span style={{ fontSize: 11, fontWeight: 400, color: 'var(--text-muted)', marginLeft: 8 }}>
-                    Simula usuarios concurrentes y observa el impacto en las métricas en tiempo real
+                    Simula usuarios concurrentes con interacciones reales de IA
                 </span>
             </div>
 
-            {/* Advertencia */}
-            <div style={{ background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.25)', borderRadius: 6, padding: '8px 12px', marginBottom: 14, fontSize: 11, color: '#fbbf24' }}>
-                ⚠️ La prueba genera carga real en el servidor. Los resultados se reflejan automáticamente en las gráficas de métricas.
+            {/* Selector de escenario */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
+                {[
+                    {
+                        key: 'basic',
+                        title: '⚡ Básico',
+                        desc: 'Requests directos a un endpoint sin autenticación. Mide capacidad bruta del servidor.',
+                        color: '#6366f1',
+                    },
+                    {
+                        key: 'realistic',
+                        title: '🎓 Realista (IA)',
+                        desc: 'Simula estudiantes reales: login → config → preguntas al chat con IA. Mide el rendimiento completo.',
+                        color: '#ef4444',
+                    },
+                ].map(sc => (
+                    <div key={sc.key} onClick={() => !isRunning && setField('scenario', sc.key)}
+                        style={{
+                            padding: '10px 14px', borderRadius: 8, cursor: isRunning ? 'default' : 'pointer',
+                            border: `2px solid ${form.scenario === sc.key ? sc.color : 'var(--border)'}`,
+                            background: form.scenario === sc.key ? `${sc.color}10` : 'transparent',
+                            transition: 'all 0.15s',
+                        }}>
+                        <div style={{ fontWeight: 700, fontSize: 13, color: form.scenario === sc.key ? sc.color : 'var(--text-secondary)', marginBottom: 4 }}>
+                            {sc.title}
+                        </div>
+                        <div style={{ fontSize: 10, color: 'var(--text-muted)', lineHeight: 1.4 }}>{sc.desc}</div>
+                    </div>
+                ))}
             </div>
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
                 {/* Formulario */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                    <div>
-                        <label style={labelStyle}>Endpoint objetivo</label>
-                        <select value={form.endpoint} onChange={e => setField('endpoint', e.target.value)}
-                            disabled={isRunning} style={inputStyle}>
-                            {endpoints.map(ep => <option key={ep} value={ep}>{ep}</option>)}
-                        </select>
-                    </div>
 
-                    <div>
-                        <label style={labelStyle}>Método HTTP</label>
-                        <select value={form.method} onChange={e => setField('method', e.target.value)}
-                            disabled={isRunning} style={inputStyle}>
-                            <option>GET</option><option>POST</option>
-                        </select>
-                    </div>
+                    {/* Configuración básica */}
+                    {!isRealistic && (
+                        <>
+                            <div>
+                                <label style={labelStyle}>Endpoint objetivo</label>
+                                <select value={form.endpoint} onChange={e => setField('endpoint', e.target.value)}
+                                    disabled={isRunning} style={inputStyle}>
+                                    {endpoints.map(ep => <option key={ep} value={ep}>{ep}</option>)}
+                                </select>
+                            </div>
+                            <div>
+                                <label style={labelStyle}>Método HTTP</label>
+                                <select value={form.method} onChange={e => setField('method', e.target.value)}
+                                    disabled={isRunning} style={inputStyle}>
+                                    <option>GET</option><option>POST</option>
+                                </select>
+                            </div>
+                        </>
+                    )}
+
+                    {/* Configuración realista */}
+                    {isRealistic && (
+                        <div style={{ background: 'rgba(99,102,241,0.08)', border: '1px solid rgba(99,102,241,0.2)', borderRadius: 8, padding: '10px 12px' }}>
+                            <div style={{ fontSize: 11, fontWeight: 600, color: '#6366f1', marginBottom: 6 }}>Flujo simulado por usuario:</div>
+                            {['GET /api/config → cargar configuración del tutor', 'POST /api/chat → pregunta aleatoria al asistente IA', '⏳ Think time → pausa realista entre mensajes', '↺ Repetir durante toda la prueba'].map((step, i) => (
+                                <div key={i} style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 3 }}>
+                                    <span style={{ color: '#6366f1', marginRight: 6 }}>{i + 1}.</span>{step}
+                                </div>
+                            ))}
+                            <div>
+                                <label style={{ ...labelStyle, marginTop: 10 }}>
+                                    Think time: <strong style={{ color: '#6366f1' }}>{form.think_time_ms}ms</strong>
+                                </label>
+                                <input type="range" min={0} max={5000} step={100} value={form.think_time_ms}
+                                    onChange={e => setField('think_time_ms', +e.target.value)}
+                                    disabled={isRunning} style={{ width: '100%' }} />
+                                <div style={{ fontSize: 9, color: 'var(--text-muted)' }}>Pausa entre preguntas del mismo usuario</div>
+                            </div>
+                        </div>
+                    )}
 
                     <div>
                         <label style={labelStyle}>
                             Usuarios concurrentes: <strong style={{ color: '#6366f1' }}>{form.concurrent_users}</strong>
                         </label>
-                        <input type="range" min={1} max={200} value={form.concurrent_users}
+                        <input type="range" min={1} max={isRealistic ? 50 : 200} value={form.concurrent_users}
                             onChange={e => setField('concurrent_users', +e.target.value)}
                             disabled={isRunning} style={{ width: '100%' }} />
                         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9, color: 'var(--text-muted)' }}>
-                            <span>1</span><span>50</span><span>100</span><span>200</span>
+                            <span>1</span><span>{isRealistic ? '10' : '50'}</span><span>{isRealistic ? '25' : '100'}</span><span>{isRealistic ? '50' : '200'}</span>
                         </div>
+                        {isRealistic && <div style={{ fontSize: 9, color: '#fbbf24' }}>⚠ Máx 50 en modo realista (la IA tiene latencia alta)</div>}
                     </div>
 
                     <div>
@@ -187,17 +269,54 @@ function StressTestPanel() {
                             onChange={e => setField('ramp_up_seconds', +e.target.value)}
                             disabled={isRunning} style={{ width: '100%' }} />
                         <div style={{ fontSize: 9, color: 'var(--text-muted)' }}>
-                            Tiempo para escalar de 0 a {form.concurrent_users} usuarios
+                            Escalar de 0 a {form.concurrent_users} usuarios gradualmente
                         </div>
                     </div>
 
+                    {/* Preparar sesiones (solo modo realista) */}
+                    {isRealistic && (
+                        <div style={{ background: 'rgba(0,0,0,0.15)', borderRadius: 8, padding: '10px 12px' }}>
+                            <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 6, color: sessionsReady ? '#4ade80' : '#fbbf24' }}>
+                                {sessionsReady ? `✅ ${state.sessions_ready} sesiones listas` : '⚠ Paso previo requerido'}
+                            </div>
+                            <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 8, lineHeight: 1.4 }}>
+                                Crea sesiones sintéticas de estudiantes en la BD para que el stress test pueda autenticarse y llamar a la IA.
+                            </div>
+                            <div style={{ display: 'flex', gap: 6 }}>
+                                <button onClick={prepare} disabled={preparing || isRunning} style={{
+                                    flex: 1, padding: '7px 0', borderRadius: 6, border: 'none', fontSize: 11,
+                                    background: sessionsReady ? 'rgba(99,102,241,0.2)' : 'rgba(99,102,241,0.6)',
+                                    color: 'white', cursor: preparing || isRunning ? 'default' : 'pointer', fontWeight: 600,
+                                }}>
+                                    {preparing ? '⏳ Preparando…' : sessionsReady ? '↺ Re-preparar sesiones' : '🔑 Preparar sesiones'}
+                                </button>
+                                {sessionsReady && (
+                                    <button onClick={cleanup} disabled={isRunning} style={{
+                                        padding: '7px 10px', borderRadius: 6, border: '1px solid rgba(239,68,68,0.4)',
+                                        background: 'transparent', color: '#f87171', cursor: 'pointer', fontSize: 11,
+                                    }}>🗑</button>
+                                )}
+                            </div>
+                            {prepareMsg && (
+                                <div style={{ fontSize: 10, marginTop: 6, color: prepareMsg.ok ? '#4ade80' : '#f87171' }}>
+                                    {prepareMsg.text}
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {/* Botones iniciar/detener */}
                     <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
                         {!isRunning ? (
-                            <button onClick={start} style={{
+                            <button onClick={start} disabled={!canStart} style={{
                                 flex: 1, padding: '10px 0', borderRadius: 8, border: 'none',
-                                background: 'linear-gradient(135deg, #ef4444, #dc2626)',
-                                color: 'white', fontWeight: 700, fontSize: 13, cursor: 'pointer',
-                            }}>▶ Iniciar prueba</button>
+                                background: canStart ? 'linear-gradient(135deg, #ef4444, #dc2626)' : 'rgba(255,255,255,0.05)',
+                                color: canStart ? 'white' : 'var(--text-muted)',
+                                fontWeight: 700, fontSize: 13,
+                                cursor: canStart ? 'pointer' : 'not-allowed',
+                            }}>
+                                ▶ Iniciar prueba
+                            </button>
                         ) : (
                             <button onClick={stop} style={{
                                 flex: 1, padding: '10px 0', borderRadius: 8, border: 'none',
@@ -210,7 +329,6 @@ function StressTestPanel() {
 
                 {/* Panel de resultados */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                    {/* Estado y progreso */}
                     <div style={{ background: 'rgba(0,0,0,0.2)', borderRadius: 8, padding: 12 }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
                             <span style={{ fontSize: 12, fontWeight: 600, color: isRunning ? '#fbbf24' : isDone ? '#4ade80' : 'var(--text-muted)' }}>
@@ -222,19 +340,23 @@ function StressTestPanel() {
                                 </span>
                             )}
                         </div>
-                        {/* Barra de progreso */}
                         <div style={{ height: 6, background: 'rgba(255,255,255,0.08)', borderRadius: 3, overflow: 'hidden' }}>
                             <div style={{
-                                height: '100%', borderRadius: 3,
-                                width: `${pct}%`,
+                                height: '100%', borderRadius: 3, width: `${pct}%`,
                                 background: isRunning ? 'linear-gradient(90deg, #6366f1, #ef4444)' : '#4ade80',
                                 transition: 'width 0.5s ease',
                             }} />
                         </div>
                         <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 4, textAlign: 'right' }}>{pct}%</div>
+
+                        {/* Pregunta actual (modo realista) */}
+                        {isRunning && isRealistic && state.current_question && (
+                            <div style={{ marginTop: 8, padding: '6px 8px', background: 'rgba(99,102,241,0.1)', borderRadius: 6, fontSize: 10, color: '#a78bfa', fontStyle: 'italic' }}>
+                                💬 "{state.current_question}"
+                            </div>
+                        )}
                     </div>
 
-                    {/* Resultados en tiempo real */}
                     {(isRunning || isDone) && s.total > 0 && (
                         <>
                             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
@@ -242,11 +364,13 @@ function StressTestPanel() {
                                     { l: 'Total req', v: s.total, c: '#6366f1' },
                                     { l: 'RPS', v: s.rps, c: '#4ade80' },
                                     { l: 'Latencia prom', v: `${s.avg_ms} ms`, c: '#fbbf24' },
+                                    { l: 'P50', v: `${s.p50_ms} ms`, c: '#fbbf24' },
                                     { l: 'P95', v: `${s.p95_ms} ms`, c: '#f59e0b' },
                                     { l: 'P99', v: `${s.p99_ms} ms`, c: '#f87171' },
                                     { l: 'Mín / Máx', v: `${s.min_ms} / ${s.max_ms} ms`, c: 'var(--text-secondary)' },
                                     { l: 'Exitosos', v: s.success, c: '#4ade80' },
                                     { l: 'Errores', v: `${s.failed} (${s.error_rate}%)`, c: s.failed > 0 ? '#f87171' : '#4ade80' },
+                                    { l: 'Duración', v: `${s.elapsed_s}s`, c: 'var(--text-secondary)' },
                                 ].map(({ l, v, c }) => (
                                     <div key={l} style={{ background: 'rgba(0,0,0,0.2)', borderRadius: 6, padding: '8px 10px' }}>
                                         <div style={{ fontSize: 9, color: 'var(--text-muted)' }}>{l}</div>
@@ -254,13 +378,26 @@ function StressTestPanel() {
                                     </div>
                                 ))}
                             </div>
-                            <div style={{ fontSize: 10, color: 'var(--text-muted)', textAlign: 'center' }}>
-                                Duración total: {s.elapsed_s}s
-                            </div>
                         </>
                     )}
 
-                    {state.status === 'idle' && (
+                    {/* Pool de preguntas (modo realista, en espera) */}
+                    {isRealistic && state.status === 'idle' && questions.length > 0 && (
+                        <div style={{ background: 'rgba(0,0,0,0.15)', borderRadius: 8, padding: 10 }}>
+                            <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 6 }}>
+                                Pool de preguntas ({questions.length}):
+                            </div>
+                            <div style={{ maxHeight: 120, overflowY: 'auto' }}>
+                                {questions.map((q, i) => (
+                                    <div key={i} style={{ fontSize: 9, color: 'rgba(255,255,255,0.4)', marginBottom: 3, padding: '2px 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                                        {i + 1}. {q}
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    {state.status === 'idle' && !isRealistic && (
                         <div style={{ fontSize: 11, color: 'var(--text-muted)', textAlign: 'center', padding: 20 }}>
                             Configura los parámetros e inicia la prueba.<br />
                             Los resultados aparecen en tiempo real.

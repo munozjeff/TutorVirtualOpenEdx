@@ -1,19 +1,21 @@
 """
 stress_runner.py — Motor de pruebas de estrés integrado.
-Ejecuta requests HTTP concurrentes contra endpoints internos del servidor
-usando asyncio + httpx. Los resultados se capturan automáticamente por el
-middleware de métricas, permitiendo observar el impacto en tiempo real.
+
+Escenarios disponibles:
+  - "basic"    : requests sin autenticación (mide capacidad bruta del servidor)
+  - "realistic": simula usuarios reales autenticados haciendo consultas a la IA
+                 (requiere preparar sesiones de prueba primero)
 """
 from __future__ import annotations
 
 import asyncio
+import random
 import time
 from dataclasses import dataclass, field
 from typing import Optional
 import httpx
 
 
-# ── Endpoints permitidos (solo internos, por seguridad) ──────────────────────
 ALLOWED_ENDPOINTS = [
     "/api/health",
     "/api/chat",
@@ -21,15 +23,36 @@ ALLOWED_ENDPOINTS = [
     "/lti/jwks",
 ]
 
+# Pool de preguntas realistas de estudiantes
+STUDENT_QUESTIONS = [
+    "¿Puedes explicarme el concepto principal de este tema?",
+    "No entiendo bien la teoría. ¿Puedes darme un ejemplo práctico?",
+    "¿Cuáles son las diferencias entre los conceptos que hemos visto?",
+    "¿Puedes resumirme los puntos más importantes?",
+    "Tengo dudas sobre cómo aplicar esto en la práctica.",
+    "¿Podrías darme un ejercicio de ejemplo resuelto paso a paso?",
+    "¿Cuál es la importancia de este tema en el contexto del curso?",
+    "¿Hay alguna regla general que deba recordar?",
+    "¿Qué errores comunes cometen los estudiantes en este tema?",
+    "¿Puedes explicar esto de una manera más sencilla?",
+    "¿Cómo se relaciona este tema con lo que vimos la semana pasada?",
+    "¿Qué recursos adicionales me recomiendas para profundizar?",
+    "¿Puedes darme tres puntos clave para recordar sobre esto?",
+    "Explícame la diferencia entre estos dos conceptos con ejemplos.",
+    "¿Cuándo debo usar este enfoque y cuándo otro diferente?",
+]
+
 
 @dataclass
 class StressConfig:
-    endpoint: str           # ej: /api/health
-    method: str             # GET | POST
-    concurrent_users: int   # usuarios simultáneos
-    duration_seconds: int   # duración total
-    ramp_up_seconds: int    # tiempo para llegar a concurrencia máxima
-    body: Optional[dict] = None  # body para POST
+    endpoint: str = "/api/health"
+    method: str = "GET"
+    concurrent_users: int = 10
+    duration_seconds: int = 30
+    ramp_up_seconds: int = 5
+    scenario: str = "basic"         # "basic" | "realistic"
+    body: Optional[dict] = None
+    think_time_ms: int = 500        # pausa entre requests por usuario (ms)
 
 
 @dataclass
@@ -64,21 +87,35 @@ class StressStats:
 
 class StressRunner:
     def __init__(self):
-        self.status: str = "idle"   # idle | running | done | stopped
+        self.status: str = "idle"
         self.config: Optional[StressConfig] = None
         self.stats: StressStats = StressStats()
         self.progress: float = 0.0
         self.active_users: int = 0
+        self.current_question: str = ""
         self._stop_event: Optional[asyncio.Event] = None
         self._task: Optional[asyncio.Task] = None
         self._base_url: str = "http://localhost:8000"
+        self._test_sessions: list[dict] = []   # tokens de sesiones de prueba
+        self._test_session_ids: list[str] = []  # IDs para limpiar después
 
     def set_base_url(self, url: str):
         self._base_url = url.rstrip("/")
 
+    def set_test_sessions(self, sessions: list[dict], session_ids: list[str]):
+        """Almacena los tokens de sesión creados para el escenario realista."""
+        self._test_sessions = sessions
+        self._test_session_ids = session_ids
+
+    def get_test_session_ids(self) -> list[str]:
+        return self._test_session_ids
+
     async def start(self, config: StressConfig) -> dict:
         if self.status == "running":
             return {"error": "Ya hay una prueba en curso"}
+
+        if config.scenario == "realistic" and not self._test_sessions:
+            return {"error": "Debes preparar sesiones de prueba primero"}
 
         self.config = config
         self.stats = StressStats(start_time=time.time())
@@ -101,26 +138,27 @@ class StressRunner:
             "status": self.status,
             "progress": round(self.progress, 3),
             "active_users": self.active_users,
+            "current_question": self.current_question,
+            "sessions_ready": len(self._test_sessions),
             "stats": summary,
             "config": {
                 "endpoint": self.config.endpoint if self.config else None,
+                "scenario": self.config.scenario if self.config else "basic",
                 "concurrent_users": self.config.concurrent_users if self.config else 0,
                 "duration_seconds": self.config.duration_seconds if self.config else 0,
             } if self.config else {},
         }
+
+    # ── Runner principal ─────────────────────────────────────────────────────
 
     async def _run(self):
         cfg = self.config
         end_time = time.time() + cfg.duration_seconds
         semaphore = asyncio.Semaphore(cfg.concurrent_users)
 
-        url = f"{self._base_url}{cfg.endpoint}"
-        headers = {"X-Stress-Test": "1"}  # marcador interno
+        limits = httpx.Limits(max_connections=cfg.concurrent_users + 20, max_keepalive_connections=cfg.concurrent_users)
 
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(30.0),
-            limits=httpx.Limits(max_connections=cfg.concurrent_users + 10),
-        ) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0), limits=limits) as client:
             tasks = set()
 
             while not self._stop_event.is_set():
@@ -128,27 +166,32 @@ class StressRunner:
                 if now >= end_time:
                     break
 
-                # Calcular progreso
                 elapsed = now - self.stats.start_time
                 self.progress = min(elapsed / cfg.duration_seconds, 1.0)
                 self.stats.elapsed = elapsed
 
-                # Ramp-up: aumentar usuarios gradualmente
                 ramp_pct = min(elapsed / cfg.ramp_up_seconds, 1.0) if cfg.ramp_up_seconds > 0 else 1.0
                 target_users = max(1, int(cfg.concurrent_users * ramp_pct))
 
-                # Lanzar nuevas tareas hasta alcanzar usuarios objetivo
                 while self.active_users < target_users and not self._stop_event.is_set():
-                    task = asyncio.create_task(
-                        self._single_request(client, cfg.method, url, cfg.body, headers, semaphore)
-                    )
+                    if cfg.scenario == "realistic":
+                        # Asignar sesión round-robin
+                        user_idx = self.active_users % len(self._test_sessions)
+                        session_token = self._test_sessions[user_idx]["token"]
+                        task = asyncio.create_task(
+                            self._realistic_user(client, semaphore, session_token, end_time)
+                        )
+                    else:
+                        url = f"{self._base_url}{cfg.endpoint}"
+                        task = asyncio.create_task(
+                            self._single_request(client, cfg.method, url, cfg.body, semaphore)
+                        )
                     tasks.add(task)
                     task.add_done_callback(tasks.discard)
                     self.active_users += 1
 
                 await asyncio.sleep(0.05)
 
-            # Esperar que terminen los requests en vuelo
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -159,37 +202,101 @@ class StressRunner:
         if self.status == "running":
             self.status = "done"
 
+    # ── Escenario REALISTA — un usuario completo ─────────────────────────────
+
+    async def _realistic_user(
+        self,
+        client: httpx.AsyncClient,
+        semaphore: asyncio.Semaphore,
+        session_token: str,
+        end_time: float,
+    ):
+        """
+        Simula un estudiante real:
+          1. Carga la configuración del tutor
+          2. Envía preguntas al chat (IA)
+          3. Espera think_time entre mensajes
+        """
+        cookies = {self._get_cookie_name(): session_token}
+        base = self._base_url
+
+        while not self._stop_event.is_set() and time.time() < end_time:
+            # Paso 1: GET /api/config
+            await self._timed_request(client, "GET", f"{base}/api/config",
+                                      cookies=cookies, semaphore=semaphore)
+
+            if self._stop_event.is_set() or time.time() >= end_time:
+                break
+
+            # Paso 2: POST /api/chat con pregunta aleatoria
+            question = random.choice(STUDENT_QUESTIONS)
+            self.current_question = question[:50] + "…"
+
+            await self._timed_request(
+                client, "POST", f"{base}/api/chat",
+                body={"message": question},
+                cookies=cookies,
+                semaphore=semaphore,
+                headers={"X-Stress-Test": "1"},
+            )
+
+            # Think time — pausa entre interacciones del mismo usuario
+            think = self.config.think_time_ms / 1000.0
+            await asyncio.sleep(think + random.uniform(0, think * 0.5))
+
+        self.active_users = max(0, self.active_users - 1)
+
+    # ── Request individual ────────────────────────────────────────────────────
+
+    async def _timed_request(
+        self,
+        client: httpx.AsyncClient,
+        method: str,
+        url: str,
+        body: Optional[dict] = None,
+        cookies: Optional[dict] = None,
+        headers: Optional[dict] = None,
+        semaphore: Optional[asyncio.Semaphore] = None,
+    ):
+        sem = semaphore or asyncio.Semaphore(1)
+        async with sem:
+            t0 = time.perf_counter()
+            try:
+                h = {"X-Stress-Test": "1", **(headers or {})}
+                if method == "POST":
+                    resp = await client.post(url, json=body or {}, cookies=cookies, headers=h)
+                else:
+                    resp = await client.get(url, cookies=cookies, headers=h)
+                ms = (time.perf_counter() - t0) * 1000
+                self.stats.total += 1
+                self.stats.latencies_ms.append(ms)
+                if resp.status_code < 400:
+                    self.stats.success += 1
+                else:
+                    self.stats.failed += 1
+            except Exception:
+                ms = (time.perf_counter() - t0) * 1000
+                self.stats.total += 1
+                self.stats.failed += 1
+                self.stats.latencies_ms.append(ms)
+
     async def _single_request(
         self,
         client: httpx.AsyncClient,
         method: str,
         url: str,
         body: Optional[dict],
-        headers: dict,
         semaphore: asyncio.Semaphore,
     ):
-        self.active_users = max(0, self.active_users)
-        async with semaphore:
-            t0 = time.perf_counter()
-            try:
-                if method == "POST":
-                    resp = await client.post(url, json=body or {}, headers=headers)
-                else:
-                    resp = await client.get(url, headers=headers)
-                elapsed_ms = (time.perf_counter() - t0) * 1000
-                self.stats.total += 1
-                self.stats.latencies_ms.append(elapsed_ms)
-                if resp.status_code < 400:
-                    self.stats.success += 1
-                else:
-                    self.stats.failed += 1
-            except Exception:
-                elapsed_ms = (time.perf_counter() - t0) * 1000
-                self.stats.total += 1
-                self.stats.failed += 1
-                self.stats.latencies_ms.append(elapsed_ms)
-            finally:
-                self.active_users = max(0, self.active_users - 1)
+        await self._timed_request(client, method, url, body=body, semaphore=semaphore)
+        self.active_users = max(0, self.active_users - 1)
+
+    def _get_cookie_name(self) -> str:
+        try:
+            from app.config import get_settings
+            return get_settings().session_cookie_name
+        except Exception:
+            return "lti_session"
 
 
 # Instancia global

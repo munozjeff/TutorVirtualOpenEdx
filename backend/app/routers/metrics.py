@@ -4,12 +4,17 @@ Expone métricas del sistema, requests, sesiones y control del stress test.
 """
 import psutil
 import time
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy import select, delete
+from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
 
+from app.database import get_db
 from app.metrics_store import metrics
-from app.stress_runner import runner, StressConfig, ALLOWED_ENDPOINTS
+from app.models import LtiInstance, LtiSession
+from app.services.session_service import generate_session_token, compute_isolation_key
+from app.stress_runner import runner, StressConfig, ALLOWED_ENDPOINTS, STUDENT_QUESTIONS
 
 router = APIRouter(prefix="/api/metrics", tags=["metrics"])
 
@@ -110,7 +115,71 @@ class StressTestRequest(BaseModel):
     concurrent_users: int = Field(default=10, ge=1, le=200)
     duration_seconds: int = Field(default=30, ge=5, le=120)
     ramp_up_seconds: int = Field(default=5, ge=0, le=30)
+    scenario: str = Field(default="basic")   # "basic" | "realistic"
+    think_time_ms: int = Field(default=500, ge=0, le=10000)
     body: Optional[dict] = None
+
+
+@router.post("/stress-test/prepare")
+async def stress_test_prepare(
+    n: int = 10,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Crea N sesiones sintéticas de prueba en la BD para el escenario realista.
+    Requiere que exista al menos una instancia LTI lanzada desde Open edX.
+    """
+    # Obtener primera instancia LTI disponible
+    result = await db.execute(select(LtiInstance).limit(1))
+    instance = result.scalar_one_or_none()
+
+    if not instance:
+        raise HTTPException(
+            status_code=400,
+            detail="No hay instancias LTI disponibles. Lanza el tutor desde Open edX al menos una vez primero.",
+        )
+
+    # Limpiar sesiones de prueba anteriores
+    prev_ids = runner.get_test_session_ids()
+    if prev_ids:
+        await db.execute(delete(LtiSession).where(LtiSession.id.in_(prev_ids)))
+        await db.commit()
+
+    # Crear N sesiones sintéticas
+    sessions_out = []
+    session_ids = []
+    n = min(n, 200)  # máximo 200
+
+    for i in range(n):
+        user_id = f"stress_user_{i + 1}"
+        isolation_key = compute_isolation_key(
+            user_id=user_id,
+            resource_link_id=f"stress_test_{instance.resource_link_id}_{i}",
+        )
+        token = generate_session_token()
+        session = LtiSession(
+            isolation_key=isolation_key,
+            instance_id=instance.id,
+            user_id=user_id,
+            user_name=f"Estudiante Prueba {i + 1}",
+            user_email=f"stress_{i + 1}@test.local",
+            user_role="student",
+            course_name="[Prueba de Estrés]",
+            session_token=token,
+        )
+        db.add(session)
+        await db.flush()
+        sessions_out.append({"user_id": user_id, "token": token})
+        session_ids.append(session.id)
+
+    await db.commit()
+    runner.set_test_sessions(sessions_out, session_ids)
+
+    return {
+        "created": n,
+        "instance": instance.tutor_name or instance.resource_link_id[:20],
+        "questions_pool": len(STUDENT_QUESTIONS),
+    }
 
 
 @router.post("/stress-test/start")
@@ -118,7 +187,7 @@ async def stress_test_start(req: StressTestRequest):
     if runner.status == "running":
         raise HTTPException(status_code=409, detail="Ya hay una prueba en curso")
 
-    if not req.endpoint.startswith("/api/") and req.endpoint not in ALLOWED_ENDPOINTS:
+    if req.scenario == "basic" and not req.endpoint.startswith("/api/") and req.endpoint not in ALLOWED_ENDPOINTS:
         raise HTTPException(status_code=400, detail=f"Endpoint no permitido: {req.endpoint}")
 
     config = StressConfig(
@@ -127,9 +196,13 @@ async def stress_test_start(req: StressTestRequest):
         concurrent_users=req.concurrent_users,
         duration_seconds=req.duration_seconds,
         ramp_up_seconds=req.ramp_up_seconds,
+        scenario=req.scenario,
+        think_time_ms=req.think_time_ms,
         body=req.body,
     )
     result = await runner.start(config)
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
     return result
 
 
@@ -144,7 +217,23 @@ def stress_test_status():
     return runner.get_state()
 
 
+@router.post("/stress-test/cleanup")
+async def stress_test_cleanup(db: AsyncSession = Depends(get_db)):
+    """Elimina las sesiones sintéticas de prueba de la BD."""
+    ids = runner.get_test_session_ids()
+    if ids:
+        await db.execute(delete(LtiSession).where(LtiSession.id.in_(ids)))
+        await db.commit()
+    runner.set_test_sessions([], [])
+    return {"deleted": len(ids)}
+
+
 @router.get("/stress-test/endpoints")
 def stress_test_endpoints():
-    """Endpoints disponibles para el stress test."""
     return ALLOWED_ENDPOINTS
+
+
+@router.get("/stress-test/questions")
+def stress_test_questions():
+    """Pool de preguntas usadas en el escenario realista."""
+    return STUDENT_QUESTIONS
