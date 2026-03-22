@@ -37,7 +37,6 @@ class GeminiProvider:
     Google Gemini via the google-genai SDK.
 
     - Model: gemini-flash-lite-latest (configurable via GEMINI_MODEL)
-    - thinking_budget=0  → disable chain-of-thought for faster responses
     - GoogleSearch tool  → enables web grounding when relevant
     - Full conversation history is sent on every turn
     - Student sessions are fully isolated (isolation_key ensures no cross-user data)
@@ -78,7 +77,6 @@ class GeminiProvider:
 
         config = types.GenerateContentConfig(
             system_instruction=system_prompt,
-            thinking_config=types.ThinkingConfig(thinking_budget=0),
             tools=[types.Tool(googleSearch=types.GoogleSearch())],
         )
 
