@@ -139,11 +139,9 @@ async def stress_test_prepare(
             detail="No hay instancias LTI disponibles. Lanza el tutor desde Open edX al menos una vez primero.",
         )
 
-    # Limpiar sesiones de prueba anteriores
-    prev_ids = runner.get_test_session_ids()
-    if prev_ids:
-        await db.execute(delete(LtiSession).where(LtiSession.id.in_(prev_ids)))
-        await db.commit()
+    # Limpiar sesiones de prueba anteriores (por user_id, sobrevive reinicios del servidor)
+    await db.execute(delete(LtiSession).where(LtiSession.user_id.like("stress_user_%")))
+    await db.commit()
 
     # Crear N sesiones sintéticas
     sessions_out = []
@@ -220,12 +218,10 @@ def stress_test_status():
 @router.post("/stress-test/cleanup")
 async def stress_test_cleanup(db: AsyncSession = Depends(get_db)):
     """Elimina las sesiones sintéticas de prueba de la BD."""
-    ids = runner.get_test_session_ids()
-    if ids:
-        await db.execute(delete(LtiSession).where(LtiSession.id.in_(ids)))
-        await db.commit()
+    result = await db.execute(delete(LtiSession).where(LtiSession.user_id.like("stress_user_%")))
+    await db.commit()
     runner.set_test_sessions([], [])
-    return {"deleted": len(ids)}
+    return {"deleted": result.rowcount}
 
 
 @router.get("/stress-test/endpoints")
