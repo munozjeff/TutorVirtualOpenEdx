@@ -18,6 +18,7 @@ from app.database import create_all_tables
 from app.metrics_store import metrics
 from app.routers import admin, challenges, chat, config, documents, lti, metrics as metrics_router
 from app.services.key_service import load_keys
+from app.stress_runner import runner as stress_runner
 
 logging.basicConfig(
     level=logging.INFO,
@@ -41,6 +42,9 @@ async def lifespan(app: FastAPI):
     # Create DB tables
     await create_all_tables()
     log.info("✅ Database ready")
+
+    # Configurar base URL del stress runner
+    stress_runner.set_base_url(f"http://localhost:{settings.app_port}")
 
     yield  # ← Application runs here
 
@@ -71,14 +75,19 @@ async def metrics_middleware(request: Request, call_next):
     start = time.perf_counter()
     response = await call_next(request)
     duration_ms = (time.perf_counter() - start) * 1000
-    # Excluir rutas de métricas y assets estáticos del registro
+
     path = request.url.path
+    # Excluir rutas de métricas del registro para no contaminar las estadísticas
     if not path.startswith("/api/metrics"):
+        session_id = request.cookies.get("lti_session", "")
+        is_stress = request.headers.get("X-Stress-Test") == "1"
         metrics.record(
             method=request.method,
             path=path,
             status_code=response.status_code,
             duration_ms=duration_ms,
+            session_id=session_id,
+            is_stress=is_stress,
         )
     return response
 
