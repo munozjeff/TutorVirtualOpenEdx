@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
 
 from app.database import get_db
-from app.metrics_store import metrics
+from app.metrics_store import metrics, resource_monitor
 from app.models import LtiInstance, LtiSession
 from app.services.session_service import generate_session_token, compute_isolation_key
 from app.stress_runner import runner, StressConfig, ALLOWED_ENDPOINTS, STUDENT_QUESTIONS
@@ -93,17 +93,34 @@ def get_sessions():
     return metrics.get_session_stats()
 
 
+# ── Historial de recursos ─────────────────────────────────────────────────────
+
+@router.get("/resources/history")
+def get_resource_history(seconds: int = 300):
+    return {
+        "history": resource_monitor.get_history(seconds),
+        "peaks":   resource_monitor.get_peaks(seconds),
+    }
+
+
+@router.get("/resources/peaks")
+def get_resource_peaks(seconds: int = 300):
+    return resource_monitor.get_peaks(seconds)
+
+
 # ── Dashboard unificado ───────────────────────────────────────────────────────
 
 @router.get("/dashboard")
 def get_dashboard():
     return {
-        "system":       get_system_metrics(),
-        "summary_60s":  metrics.get_summary(seconds=60),
-        "summary_300s": metrics.get_summary(seconds=300),
-        "endpoints":    metrics.get_by_endpoint(seconds=300),
-        "timeline":     metrics.get_timeline(seconds=300, buckets=30),
-        "sessions":     metrics.get_session_stats(),
+        "system":           get_system_metrics(),
+        "summary_60s":      metrics.get_summary(seconds=60),
+        "summary_300s":     metrics.get_summary(seconds=300),
+        "endpoints":        metrics.get_by_endpoint(seconds=300),
+        "timeline":         metrics.get_timeline(seconds=300, buckets=30),
+        "sessions":         metrics.get_session_stats(),
+        "resource_history": resource_monitor.get_history(seconds=300),
+        "resource_peaks":   resource_monitor.get_peaks(seconds=300),
     }
 
 

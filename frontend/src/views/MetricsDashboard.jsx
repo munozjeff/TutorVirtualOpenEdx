@@ -618,7 +618,8 @@ export default function MetricsDashboard() {
     if (loading) return <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}>Cargando métricas…</div>
     if (!data) return <div style={{ padding: 40, textAlign: 'center', color: '#f87171' }}>No se pudieron obtener las métricas.</div>
 
-    const { system, summary_60s: s60, summary_300s: s300, endpoints, timeline, sessions } = data
+    const { system, summary_60s: s60, summary_300s: s300, endpoints, timeline, sessions,
+            resource_history: resHistory = [], resource_peaks: resPeaks = {} } = data
 
     const timelineData = (timeline || []).map((t, i) => ({
         name: i % 5 === 0 ? `${Math.round((timeline.length - i) * (300 / timeline.length))}s` : '',
@@ -672,6 +673,72 @@ export default function MetricsDashboard() {
                     <div style={statPill}>Req (5 min): <b>{s300.total}</b></div>
                     <div style={statPill}>RPS (5 min): <b>{s300.rps}</b></div>
                 </div>
+
+                {/* Picos — últimos 5 minutos */}
+                {resPeaks.cpu && (
+                    <>
+                        <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-muted)', margin: '16px 0 8px', letterSpacing: 1 }}>
+                            PICOS — ÚLTIMOS 5 MINUTOS ({resPeaks.samples} muestras)
+                        </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 8 }}>
+                            {[
+                                { l: 'CPU pico', v: `${resPeaks.cpu.peak}%`, s: `prom ${resPeaks.cpu.avg}% · mín ${resPeaks.cpu.min}%`, c: resPeaks.cpu.peak > 80 ? '#f87171' : resPeaks.cpu.peak > 50 ? '#fbbf24' : '#4ade80' },
+                                { l: 'RAM pico', v: `${resPeaks.ram_pct.peak}%`, s: `${resPeaks.ram_mb.peak} MB · prom ${resPeaks.ram_pct.avg}%`, c: resPeaks.ram_pct.peak > 85 ? '#f87171' : resPeaks.ram_pct.peak > 65 ? '#fbbf24' : '#4ade80' },
+                                { l: 'RAM pico (MB)', v: `${resPeaks.ram_mb.peak} MB`, s: `prom ${resPeaks.ram_mb.avg} MB · mín ${resPeaks.ram_mb.min} MB`, c: '#a78bfa' },
+                                { l: 'Disco pico', v: `${resPeaks.disk_pct.peak}%`, s: `prom ${resPeaks.disk_pct.avg}%`, c: resPeaks.disk_pct.peak > 90 ? '#f87171' : '#38bdf8' },
+                            ].map(({ l, v, s, c }) => (
+                                <div key={l} style={{ background: 'rgba(0,0,0,0.25)', borderRadius: 8, padding: '10px 12px', borderLeft: `3px solid ${c}` }}>
+                                    <div style={{ fontSize: 9, color: 'var(--text-muted)', marginBottom: 3 }}>{l}</div>
+                                    <div style={{ fontSize: 20, fontWeight: 700, color: c, lineHeight: 1 }}>{v}</div>
+                                    <div style={{ fontSize: 9, color: 'rgba(255,255,255,0.3)', marginTop: 4 }}>{s}</div>
+                                </div>
+                            ))}
+                        </div>
+                    </>
+                )}
+
+                {/* Historial de recursos — gráfica de líneas */}
+                {resHistory.length > 0 && (
+                    <>
+                        <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-muted)', margin: '16px 0 8px', letterSpacing: 1 }}>
+                            EVOLUCIÓN DE RECURSOS (últimos 5 min)
+                        </div>
+                        <ResponsiveContainer width="100%" height={160}>
+                            <LineChart
+                                data={resHistory.map((s, i) => ({
+                                    name: i % Math.max(1, Math.floor(resHistory.length / 6)) === 0
+                                        ? `${Math.round((resHistory.length - i) * 5 / 60)}min`
+                                        : '',
+                                    cpu: s.cpu,
+                                    ram_pct: s.ram_pct,
+                                    disk_pct: s.disk_pct,
+                                }))}
+                                margin={{ top: 4, right: 10, left: -20, bottom: 0 }}
+                            >
+                                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+                                <XAxis dataKey="name" tick={{ fill: 'rgba(255,255,255,0.3)', fontSize: 9 }} />
+                                <YAxis domain={[0, 100]} unit="%" tick={{ fill: 'rgba(255,255,255,0.3)', fontSize: 9 }} />
+                                <Tooltip
+                                    contentStyle={{ background: '#1a1a2e', border: '1px solid rgba(255,255,255,0.1)', fontSize: 10 }}
+                                    formatter={(v, name) => [`${v}%`, name === 'cpu' ? 'CPU' : name === 'ram_pct' ? 'RAM' : 'Disco']}
+                                />
+                                <Line type="monotone" dataKey="cpu" stroke="#6366f1" dot={false} strokeWidth={2} name="cpu" />
+                                <Line type="monotone" dataKey="ram_pct" stroke="#fbbf24" dot={false} strokeWidth={2} name="ram_pct" />
+                                <Line type="monotone" dataKey="disk_pct" stroke="#a78bfa" dot={false} strokeWidth={1.5} name="disk_pct" strokeDasharray="4 2" />
+                            </LineChart>
+                        </ResponsiveContainer>
+                        <div style={{ display: 'flex', gap: 14, marginTop: 4, fontSize: 10, color: 'var(--text-muted)' }}>
+                            <span><span style={{ color: '#6366f1' }}>●</span> CPU %</span>
+                            <span><span style={{ color: '#fbbf24' }}>●</span> RAM %</span>
+                            <span><span style={{ color: '#a78bfa' }}>- -</span> Disco %</span>
+                        </div>
+                    </>
+                )}
+                {resHistory.length === 0 && (
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 12, textAlign: 'center' }}>
+                        El historial se acumula cada 5 s — espera unos segundos…
+                    </div>
+                )}
             </div>
 
             {/* Sección de sesiones */}

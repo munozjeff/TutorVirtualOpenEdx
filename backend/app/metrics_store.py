@@ -251,5 +251,84 @@ def _normalize_path(path: str) -> str:
     return path
 
 
-# Instancia global
+# ── Monitor de recursos del sistema ──────────────────────────────────────────
+
+class ResourceMonitor:
+    """
+    Muestrea CPU, RAM y disco cada N segundos y guarda un historial en memoria.
+    Permite obtener picos, promedios y la evolución temporal del servidor.
+    """
+
+    SAMPLE_INTERVAL = 5        # segundos entre muestras
+    MAX_SAMPLES = 720          # 720 × 5s = 1 hora de historial
+
+    def __init__(self):
+        self._samples: deque = deque(maxlen=self.MAX_SAMPLES)
+        self._task = None
+
+    async def start(self):
+        import psutil as _ps
+        _ps.cpu_percent()          # primera llamada siempre devuelve 0 — descartada
+        import asyncio
+        self._task = asyncio.create_task(self._loop())
+
+    async def _loop(self):
+        import asyncio, psutil as _ps
+        while True:
+            await asyncio.sleep(self.SAMPLE_INTERVAL)
+            try:
+                vm = _ps.virtual_memory()
+                disk = _ps.disk_usage("/")
+                self._samples.append({
+                    "t": round(time()),
+                    "cpu": _ps.cpu_percent(),
+                    "ram_mb": round(vm.used / 1024 / 1024),
+                    "ram_pct": round(vm.percent, 1),
+                    "disk_pct": round(disk.percent, 1),
+                    "disk_free_gb": round(disk.free / 1024 / 1024 / 1024, 2),
+                })
+            except Exception:
+                pass
+
+    def get_history(self, seconds: int = 300) -> list[dict]:
+        cutoff = time() - seconds
+        return [s for s in self._samples if s["t"] >= cutoff]
+
+    def get_peaks(self, seconds: int = 300) -> dict:
+        history = self.get_history(seconds)
+        if not history:
+            return {}
+        cpu_vals   = [s["cpu"]     for s in history]
+        ram_mb     = [s["ram_mb"]  for s in history]
+        ram_pct    = [s["ram_pct"] for s in history]
+        disk_pct   = [s["disk_pct"] for s in history]
+        n = len(history)
+        return {
+            "window_seconds": seconds,
+            "samples": n,
+            "cpu": {
+                "peak": max(cpu_vals),
+                "avg":  round(sum(cpu_vals) / n, 1),
+                "min":  min(cpu_vals),
+            },
+            "ram_mb": {
+                "peak": max(ram_mb),
+                "avg":  round(sum(ram_mb) / n),
+                "min":  min(ram_mb),
+            },
+            "ram_pct": {
+                "peak": max(ram_pct),
+                "avg":  round(sum(ram_pct) / n, 1),
+                "min":  min(ram_pct),
+            },
+            "disk_pct": {
+                "peak": max(disk_pct),
+                "avg":  round(sum(disk_pct) / n, 1),
+                "min":  min(disk_pct),
+            },
+        }
+
+
+# Instancias globales
 metrics = MetricsStore()
+resource_monitor = ResourceMonitor()

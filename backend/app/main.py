@@ -15,7 +15,7 @@ from fastapi.responses import JSONResponse
 
 from app.config import get_settings
 from app.database import create_all_tables
-from app.metrics_store import metrics
+from app.metrics_store import metrics, resource_monitor
 from app.routers import admin, challenges, chat, config, documents, lti, metrics as metrics_router
 from app.services.key_service import load_keys
 from app.stress_runner import runner as stress_runner
@@ -45,6 +45,10 @@ async def lifespan(app: FastAPI):
 
     # Configurar base URL del stress runner
     stress_runner.set_base_url(f"http://localhost:{settings.app_port}")
+
+    # Iniciar monitor de recursos del sistema (muestrea cada 5s)
+    await resource_monitor.start()
+    log.info("✅ Resource monitor started")
 
     yield  # ← Application runs here
 
