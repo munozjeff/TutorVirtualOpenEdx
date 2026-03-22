@@ -3,6 +3,7 @@ import Header from './components/Header'
 import StudentView from './views/StudentView'
 import InstructorView from './views/InstructorView'
 import RegistrationPanel from './views/RegistrationPanel'
+import MetricsDashboard from './views/MetricsDashboard'
 import { useChat } from './hooks/useChat'
 
 export default function App() {
@@ -20,6 +21,8 @@ export default function App() {
     const isAdminMode = new URLSearchParams(window.location.search).get('admin') === '1'
 
     // ── Admin mode: direct access for setup (no LTI session required) ──────────
+    const [adminTab, setAdminTab] = useState('lti')
+
     if (isAdminMode) {
         return (
             <div className="app">
@@ -28,8 +31,28 @@ export default function App() {
                         <div className="header__avatar">🎓</div>
                         <div><div className="header__title">Tutor Virtual — Administración</div></div>
                     </div>
+                    <nav style={{ display: 'flex', gap: 4 }}>
+                        {[
+                            { key: 'lti', label: '⚙️ Configuración LTI' },
+                            { key: 'metrics', label: '📊 Métricas' },
+                        ].map(tab => (
+                            <button key={tab.key} onClick={() => setAdminTab(tab.key)} style={{
+                                padding: '5px 14px', fontSize: 12, borderRadius: 6, cursor: 'pointer',
+                                border: '1px solid',
+                                borderColor: adminTab === tab.key ? 'var(--accent-primary)' : 'var(--border)',
+                                background: adminTab === tab.key ? 'rgba(99,102,241,0.15)' : 'transparent',
+                                color: adminTab === tab.key ? 'var(--accent-primary)' : 'var(--text-secondary)',
+                                fontWeight: adminTab === tab.key ? 600 : 400,
+                                transition: 'all 0.15s',
+                            }}>
+                                {tab.label}
+                            </button>
+                        ))}
+                    </nav>
                 </header>
-                <RegistrationPanel />
+                <div className="panel-content" style={{ overflowY: 'auto', flex: 1 }}>
+                    {adminTab === 'lti' ? <RegistrationPanel /> : <MetricsDashboard />}
+                </div>
             </div>
         )
     }

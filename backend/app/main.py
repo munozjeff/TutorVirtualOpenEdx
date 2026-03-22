@@ -5,16 +5,18 @@ from __future__ import annotations
 
 import logging
 import shutil
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.config import get_settings
 from app.database import create_all_tables
-from app.routers import admin, challenges, chat, config, documents, lti
+from app.metrics_store import metrics
+from app.routers import admin, challenges, chat, config, documents, lti, metrics as metrics_router
 from app.services.key_service import load_keys
 
 logging.basicConfig(
@@ -63,6 +65,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ─── Middleware de métricas de latencia ───────────────────────────────────────
+@app.middleware("http")
+async def metrics_middleware(request: Request, call_next):
+    start = time.perf_counter()
+    response = await call_next(request)
+    duration_ms = (time.perf_counter() - start) * 1000
+    # Excluir rutas de métricas y assets estáticos del registro
+    path = request.url.path
+    if not path.startswith("/api/metrics"):
+        metrics.record(
+            method=request.method,
+            path=path,
+            status_code=response.status_code,
+            duration_ms=duration_ms,
+        )
+    return response
+
 # ─── Routers ──────────────────────────────────────────────────────────────────
 app.include_router(lti.router)
 app.include_router(chat.router)
@@ -70,6 +89,7 @@ app.include_router(config.router)
 app.include_router(documents.router)
 app.include_router(challenges.router)
 app.include_router(admin.router)
+app.include_router(metrics_router.router)
 
 
 # ─── Health ───────────────────────────────────────────────────────────────────
