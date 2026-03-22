@@ -255,12 +255,14 @@ def _normalize_path(path: str) -> str:
 
 class ResourceMonitor:
     """
-    Muestrea CPU, RAM y disco cada N segundos y guarda un historial en memoria.
-    Permite obtener picos, promedios y la evolución temporal del servidor.
+    Muestrea CPU, RAM y disco cada N segundos.
+    - Guarda historial en memoria para el dashboard (últimas MAX_SAMPLES muestras)
+    - Persiste TODAS las muestras en data/resource_history.jsonl para análisis posterior
     """
 
     SAMPLE_INTERVAL = 5        # segundos entre muestras
-    MAX_SAMPLES = 720          # 720 × 5s = 1 hora de historial
+    MAX_SAMPLES = 720          # 720 × 5s = 1 hora de historial en memoria
+    LOG_FILE = "data/resource_history.jsonl"
 
     def __init__(self):
         self._samples: deque = deque(maxlen=self.MAX_SAMPLES)
@@ -268,25 +270,31 @@ class ResourceMonitor:
 
     async def start(self):
         import psutil as _ps
+        from pathlib import Path
+        Path("data").mkdir(exist_ok=True)
         _ps.cpu_percent()          # primera llamada siempre devuelve 0 — descartada
         import asyncio
         self._task = asyncio.create_task(self._loop())
 
     async def _loop(self):
-        import asyncio, psutil as _ps
+        import asyncio, psutil as _ps, json
         while True:
             await asyncio.sleep(self.SAMPLE_INTERVAL)
             try:
                 vm = _ps.virtual_memory()
                 disk = _ps.disk_usage("/")
-                self._samples.append({
+                sample = {
                     "t": round(time()),
                     "cpu": _ps.cpu_percent(),
                     "ram_mb": round(vm.used / 1024 / 1024),
                     "ram_pct": round(vm.percent, 1),
                     "disk_pct": round(disk.percent, 1),
                     "disk_free_gb": round(disk.free / 1024 / 1024 / 1024, 2),
-                })
+                }
+                self._samples.append(sample)
+                # Persistir en archivo JSONL
+                with open(self.LOG_FILE, "a") as f:
+                    f.write(json.dumps(sample) + "\n")
             except Exception:
                 pass
 

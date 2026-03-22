@@ -2,9 +2,14 @@
 routers/metrics.py — Endpoints de métricas para el dashboard de administración.
 Expone métricas del sistema, requests, sesiones y control del stress test.
 """
+import csv
+import io
+import json
 import psutil
 import time
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -106,6 +111,91 @@ def get_resource_history(seconds: int = 300):
 @router.get("/resources/peaks")
 def get_resource_peaks(seconds: int = 300):
     return resource_monitor.get_peaks(seconds)
+
+
+# ── Exportación / Historial persistido ────────────────────────────────────────
+
+def _read_jsonl(path: str) -> list[dict]:
+    """Lee un archivo JSONL y devuelve lista de dicts. Retorna [] si no existe."""
+    from pathlib import Path
+    p = Path(path)
+    if not p.exists():
+        return []
+    records = []
+    with open(p) as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                try:
+                    records.append(json.loads(line))
+                except Exception:
+                    pass
+    return records
+
+
+@router.get("/export/resource-history")
+def export_resource_history():
+    """Descarga el historial completo de recursos del servidor en CSV."""
+    records = _read_jsonl("data/resource_history.jsonl")
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["timestamp", "datetime", "cpu_pct", "ram_mb", "ram_pct", "disk_pct", "disk_free_gb"])
+    for r in records:
+        writer.writerow([
+            r.get("t"), datetime.fromtimestamp(r.get("t", 0)).strftime("%Y-%m-%d %H:%M:%S"),
+            r.get("cpu"), r.get("ram_mb"), r.get("ram_pct"), r.get("disk_pct"), r.get("disk_free_gb"),
+        ])
+    buf.seek(0)
+    filename = f"recursos_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    return StreamingResponse(io.BytesIO(buf.getvalue().encode()), media_type="text/csv",
+                             headers={"Content-Disposition": f"attachment; filename={filename}"})
+
+
+@router.get("/export/stress-results")
+def export_stress_results():
+    """Descarga el historial de todas las pruebas de estrés en CSV."""
+    records = _read_jsonl("data/stress_results.jsonl")
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([
+        "timestamp", "datetime", "scenario", "endpoint", "concurrent_users",
+        "duration_s", "think_time_ms", "total_req", "rps", "success", "errors",
+        "error_rate_pct", "avg_ms", "p50_ms", "p95_ms", "p99_ms", "min_ms", "max_ms",
+        "peak_cpu_pct", "avg_cpu_pct", "peak_ram_mb", "avg_ram_mb",
+        "per_session_cpu_pct", "per_session_ram_mb",
+    ])
+    for r in records:
+        cfg = r.get("config", {})
+        res = r.get("results", {})
+        rsc = r.get("resources", {})
+        writer.writerow([
+            r.get("timestamp"),
+            datetime.fromtimestamp(r.get("timestamp", 0)).strftime("%Y-%m-%d %H:%M:%S"),
+            cfg.get("scenario"), cfg.get("endpoint"), cfg.get("concurrent_users"),
+            res.get("elapsed_s"), cfg.get("think_time_ms"),
+            res.get("total"), res.get("rps"), res.get("success"), res.get("failed"),
+            res.get("error_rate"), res.get("avg_ms"), res.get("p50_ms"),
+            res.get("p95_ms"), res.get("p99_ms"), res.get("min_ms"), res.get("max_ms"),
+            rsc.get("peak_cpu_pct"), rsc.get("avg_cpu_pct"),
+            rsc.get("peak_ram_mb"), rsc.get("avg_ram_mb"),
+            rsc.get("per_session_cpu_pct"), rsc.get("per_session_ram_mb"),
+        ])
+    buf.seek(0)
+    filename = f"stress_tests_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    return StreamingResponse(io.BytesIO(buf.getvalue().encode()), media_type="text/csv",
+                             headers={"Content-Disposition": f"attachment; filename={filename}"})
+
+
+@router.get("/stress-test/history")
+def get_stress_history():
+    """Lista de todas las pruebas de estrés guardadas (sin el timeline detallado)."""
+    records = _read_jsonl("data/stress_results.jsonl")
+    # Devolver en orden más reciente primero, sin el timeline de recursos (muy grande)
+    result = []
+    for r in reversed(records):
+        rsc = {k: v for k, v in r.get("resources", {}).items() if k != "timeline"}
+        result.append({**r, "resources": rsc})
+    return result
 
 
 # ── Dashboard unificado ───────────────────────────────────────────────────────

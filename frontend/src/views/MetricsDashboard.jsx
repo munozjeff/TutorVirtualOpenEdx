@@ -583,6 +583,89 @@ function SessionsPanel({ sessions }) {
 
 
 // ══════════════════════════════════════════════════════════════════════════════
+// Historial persistido de pruebas de estrés
+// ══════════════════════════════════════════════════════════════════════════════
+function StressHistoryPanel() {
+    const [history, setHistory] = useState([])
+    const [loading, setLoading] = useState(true)
+
+    useEffect(() => {
+        api.get('/api/metrics/stress-test/history')
+            .then(r => setHistory(r.data))
+            .catch(() => {})
+            .finally(() => setLoading(false))
+    }, [])
+
+    const fmtDate = ts => new Date(ts * 1000).toLocaleString('es-ES', { dateStyle: 'short', timeStyle: 'short' })
+    const scenarioBadge = s => s === 'realistic'
+        ? <span style={{ background: 'rgba(99,102,241,0.2)', color: '#a78bfa', borderRadius: 4, padding: '1px 6px', fontSize: 9 }}>🎓 Realista</span>
+        : <span style={{ background: 'rgba(74,222,128,0.15)', color: '#4ade80', borderRadius: 4, padding: '1px 6px', fontSize: 9 }}>⚡ Básico</span>
+
+    return (
+        <div className="section-card">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+                <div className="section-card__title" style={{ margin: 0 }}>
+                    📋 Historial de Pruebas de Estrés
+                    <span style={{ fontSize: 11, fontWeight: 400, color: 'var(--text-muted)', marginLeft: 8 }}>
+                        Guardado automáticamente en <code style={{ fontSize: 10 }}>data/stress_results.jsonl</code>
+                    </span>
+                </div>
+                <a href="/api/metrics/export/stress-results" download
+                    style={{ padding: '5px 12px', fontSize: 11, borderRadius: 6, border: '1px solid rgba(99,102,241,0.4)', background: 'rgba(99,102,241,0.1)', color: '#a78bfa', textDecoration: 'none', whiteSpace: 'nowrap' }}>
+                    ⬇ Exportar CSV
+                </a>
+            </div>
+
+            {loading && <div style={{ color: 'var(--text-muted)', fontSize: 12, textAlign: 'center', padding: 12 }}>Cargando historial…</div>}
+            {!loading && history.length === 0 && (
+                <div style={{ color: 'var(--text-muted)', fontSize: 12, textAlign: 'center', padding: 16 }}>
+                    Sin pruebas registradas aún. Los resultados se guardan automáticamente al finalizar cada prueba.
+                </div>
+            )}
+            {!loading && history.length > 0 && (
+                <div style={{ overflowX: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                        <thead>
+                            <tr style={{ borderBottom: '1px solid var(--border)' }}>
+                                {['Fecha', 'Escenario', 'Usuarios', 'Duración', 'Total req', 'RPS', 'Error %', 'Lat. prom', 'P95', 'CPU pico', 'RAM pico', 'CPU/sesión', 'RAM/sesión'].map(h => (
+                                    <th key={h} style={{ padding: '6px 8px', textAlign: 'left', color: 'var(--text-muted)', fontWeight: 600, whiteSpace: 'nowrap' }}>{h}</th>
+                                ))}
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {history.map((r, i) => {
+                                const res = r.results || {}
+                                const cfg = r.config || {}
+                                const rsc = r.resources || {}
+                                const errColor = (res.error_rate || 0) > 20 ? '#f87171' : (res.error_rate || 0) > 5 ? '#fbbf24' : '#4ade80'
+                                return (
+                                    <tr key={i} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)', background: i === 0 ? 'rgba(99,102,241,0.04)' : 'transparent' }}>
+                                        <td style={{ padding: '7px 8px', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{fmtDate(r.timestamp)}</td>
+                                        <td style={{ padding: '7px 8px' }}>{scenarioBadge(cfg.scenario)}</td>
+                                        <td style={{ padding: '7px 8px', color: '#6366f1', fontWeight: 600 }}>{cfg.concurrent_users}</td>
+                                        <td style={{ padding: '7px 8px', color: 'var(--text-muted)' }}>{res.elapsed_s}s</td>
+                                        <td style={{ padding: '7px 8px', color: 'var(--text-secondary)' }}>{res.total}</td>
+                                        <td style={{ padding: '7px 8px', color: '#4ade80', fontWeight: 600 }}>{res.rps}</td>
+                                        <td style={{ padding: '7px 8px', color: errColor, fontWeight: 600 }}>{res.error_rate}%</td>
+                                        <td style={{ padding: '7px 8px', color: '#fbbf24' }}>{res.avg_ms} ms</td>
+                                        <td style={{ padding: '7px 8px', color: '#f59e0b' }}>{res.p95_ms} ms</td>
+                                        <td style={{ padding: '7px 8px', color: rsc.peak_cpu_pct > 80 ? '#f87171' : '#4ade80' }}>{rsc.peak_cpu_pct ?? '—'}%</td>
+                                        <td style={{ padding: '7px 8px', color: '#a78bfa' }}>{rsc.peak_ram_mb ?? '—'} MB</td>
+                                        <td style={{ padding: '7px 8px', color: '#6366f1' }}>{rsc.per_session_cpu_pct ?? '—'}%</td>
+                                        <td style={{ padding: '7px 8px', color: '#fbbf24' }}>{rsc.per_session_ram_mb ?? '—'} MB</td>
+                                    </tr>
+                                )
+                            })}
+                        </tbody>
+                    </table>
+                </div>
+            )}
+        </div>
+    )
+}
+
+
+// ══════════════════════════════════════════════════════════════════════════════
 // Dashboard principal
 // ══════════════════════════════════════════════════════════════════════════════
 export default function MetricsDashboard() {
@@ -641,6 +724,11 @@ export default function MetricsDashboard() {
                         <input type="checkbox" checked={autoRefresh} onChange={e => setAutoRefresh(e.target.checked)} />
                         Auto-refresh 5s
                     </label>
+                    <a href="/api/metrics/export/resource-history" download
+                        style={{ padding: '5px 10px', fontSize: 11, borderRadius: 6, border: '1px solid rgba(74,222,128,0.3)', background: 'rgba(74,222,128,0.08)', color: '#4ade80', textDecoration: 'none' }}
+                        title="Descargar historial de recursos (CSV)">
+                        ⬇ Recursos CSV
+                    </a>
                     <button onClick={fetchData} style={{ padding: '5px 12px', fontSize: 11, borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer' }}>↻ Actualizar</button>
                 </div>
             </div>
@@ -743,6 +831,9 @@ export default function MetricsDashboard() {
 
             {/* Sección de sesiones */}
             <SessionsPanel sessions={sessions} />
+
+            {/* Historial de pruebas */}
+            <StressHistoryPanel />
 
             {/* Stress Test */}
             <StressTestPanel />

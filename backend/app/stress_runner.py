@@ -254,6 +254,7 @@ class StressRunner:
         self.active_users = 0
         if self.status == "running":
             self.status = "done"
+        self._save_result()
 
     async def _sample_resources(self, end_time: float):
         """Muestrea CPU y RAM cada segundo durante la prueba."""
@@ -271,6 +272,33 @@ class StressRunner:
                 ))
             except Exception:
                 pass
+
+    def _save_result(self):
+        """Persiste el resultado completo de la prueba en data/stress_results.jsonl."""
+        import json
+        from pathlib import Path
+        Path("data").mkdir(exist_ok=True)
+        cfg = self.config
+        summary = self.stats.summary()
+        record = {
+            "timestamp": round(self.stats.start_time),
+            "status": self.status,
+            "config": {
+                "scenario": cfg.scenario,
+                "endpoint": cfg.endpoint,
+                "concurrent_users": cfg.concurrent_users,
+                "duration_seconds": cfg.duration_seconds,
+                "ramp_up_seconds": cfg.ramp_up_seconds,
+                "think_time_ms": cfg.think_time_ms,
+            },
+            "results": {k: v for k, v in summary.items() if k != "resources"},
+            "resources": summary.get("resources", {}),
+        }
+        try:
+            with open("data/stress_results.jsonl", "a") as f:
+                f.write(json.dumps(record) + "\n")
+        except Exception:
+            pass
 
     # ── Escenario REALISTA — un usuario completo ─────────────────────────────
 
