@@ -359,7 +359,11 @@ function StressTestPanel() {
 
                     {(isRunning || isDone) && s.total > 0 && (
                         <>
-                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+                            {/* Resultados de red / latencia */}
+                            <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 4, letterSpacing: 1 }}>
+                                RED &amp; LATENCIA
+                            </div>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 10 }}>
                                 {[
                                     { l: 'Total req', v: s.total, c: '#6366f1' },
                                     { l: 'RPS', v: s.rps, c: '#4ade80' },
@@ -378,6 +382,74 @@ function StressTestPanel() {
                                     </div>
                                 ))}
                             </div>
+
+                            {/* Recursos del servidor durante la prueba */}
+                            {s.resources && s.resources.peak_cpu_pct !== undefined && (
+                                <>
+                                    <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 4, letterSpacing: 1 }}>
+                                        RECURSOS DEL SERVIDOR
+                                    </div>
+                                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 10 }}>
+                                        {[
+                                            { l: 'CPU prom', v: `${s.resources.avg_cpu_pct}%`, c: '#4ade80' },
+                                            { l: 'CPU pico', v: `${s.resources.peak_cpu_pct}%`, c: s.resources.peak_cpu_pct > 80 ? '#f87171' : '#fbbf24' },
+                                            { l: 'RAM prom', v: `${s.resources.avg_ram_mb} MB`, c: '#4ade80' },
+                                            { l: 'RAM pico', v: `${s.resources.peak_ram_mb} MB (${s.resources.peak_ram_pct}%)`, c: s.resources.peak_ram_pct > 80 ? '#f87171' : '#fbbf24' },
+                                            { l: 'Usuarios pico', v: s.resources.peak_concurrent_users, c: '#6366f1' },
+                                            { l: 'Usuarios prom', v: s.resources.avg_concurrent_users, c: '#a78bfa' },
+                                        ].map(({ l, v, c }) => (
+                                            <div key={l} style={{ background: 'rgba(0,0,0,0.2)', borderRadius: 6, padding: '8px 10px' }}>
+                                                <div style={{ fontSize: 9, color: 'var(--text-muted)' }}>{l}</div>
+                                                <div style={{ fontSize: 13, fontWeight: 700, color: c }}>{v}</div>
+                                            </div>
+                                        ))}
+                                    </div>
+
+                                    {/* Coste por sesión */}
+                                    <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 4, letterSpacing: 1 }}>
+                                        COSTE ESTIMADO POR SESIÓN (en pico)
+                                    </div>
+                                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 10 }}>
+                                        <div style={{ background: 'rgba(99,102,241,0.12)', border: '1px solid rgba(99,102,241,0.3)', borderRadius: 6, padding: '10px 12px' }}>
+                                            <div style={{ fontSize: 9, color: 'var(--text-muted)' }}>CPU / sesión</div>
+                                            <div style={{ fontSize: 18, fontWeight: 700, color: '#6366f1' }}>{s.resources.per_session_cpu_pct}%</div>
+                                            <div style={{ fontSize: 8, color: 'var(--text-muted)', marginTop: 2 }}>del total del sistema</div>
+                                        </div>
+                                        <div style={{ background: 'rgba(251,191,36,0.12)', border: '1px solid rgba(251,191,36,0.3)', borderRadius: 6, padding: '10px 12px' }}>
+                                            <div style={{ fontSize: 9, color: 'var(--text-muted)' }}>RAM / sesión</div>
+                                            <div style={{ fontSize: 18, fontWeight: 700, color: '#fbbf24' }}>{s.resources.per_session_ram_mb} MB</div>
+                                            <div style={{ fontSize: 8, color: 'var(--text-muted)', marginTop: 2 }}>memoria estimada</div>
+                                        </div>
+                                    </div>
+
+                                    {/* Mini-timeline CPU/RAM */}
+                                    {isDone && s.resources.timeline && s.resources.timeline.length > 0 && (
+                                        <div style={{ background: 'rgba(0,0,0,0.2)', borderRadius: 8, padding: 10 }}>
+                                            <div style={{ fontSize: 9, color: 'var(--text-muted)', marginBottom: 6, fontWeight: 600 }}>
+                                                EVOLUCIÓN DURANTE LA PRUEBA
+                                            </div>
+                                            <ResponsiveContainer width="100%" height={80}>
+                                                <LineChart data={s.resources.timeline} margin={{ top: 0, right: 0, left: -30, bottom: 0 }}>
+                                                    <CartesianGrid strokeDasharray="2 2" stroke="rgba(255,255,255,0.05)" />
+                                                    <XAxis dataKey="t" tick={{ fontSize: 8, fill: 'rgba(255,255,255,0.3)' }} tickFormatter={v => `${v}s`} />
+                                                    <YAxis tick={{ fontSize: 8, fill: 'rgba(255,255,255,0.3)' }} />
+                                                    <Tooltip
+                                                        contentStyle={{ background: '#1a1a2e', border: '1px solid rgba(255,255,255,0.1)', fontSize: 10 }}
+                                                        formatter={(v, name) => [name === 'cpu' ? `${v}%` : `${v} MB`, name === 'cpu' ? 'CPU' : 'RAM']}
+                                                        labelFormatter={v => `t=${v}s`}
+                                                    />
+                                                    <Line type="monotone" dataKey="cpu" stroke="#6366f1" dot={false} strokeWidth={1.5} name="cpu" />
+                                                    <Line type="monotone" dataKey="ram_mb" stroke="#fbbf24" dot={false} strokeWidth={1.5} name="ram_mb" />
+                                                </LineChart>
+                                            </ResponsiveContainer>
+                                            <div style={{ display: 'flex', gap: 12, marginTop: 4, fontSize: 9, color: 'var(--text-muted)' }}>
+                                                <span><span style={{ color: '#6366f1' }}>●</span> CPU %</span>
+                                                <span><span style={{ color: '#fbbf24' }}>●</span> RAM MB</span>
+                                            </div>
+                                        </div>
+                                    )}
+                                </>
+                            )}
                         </>
                     )}
 

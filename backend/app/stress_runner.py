@@ -14,6 +14,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 import httpx
+import psutil
 
 
 ALLOWED_ENDPOINTS = [
@@ -56,6 +57,15 @@ class StressConfig:
 
 
 @dataclass
+class ResourceSample:
+    timestamp: float
+    cpu_pct: float
+    ram_mb: float
+    ram_pct: float
+    active_users: int
+
+
+@dataclass
 class StressStats:
     total: int = 0
     success: int = 0
@@ -64,6 +74,7 @@ class StressStats:
     start_time: float = 0.0
     end_time: float = 0.0
     elapsed: float = 0.0
+    resource_samples: list = field(default_factory=list)  # list[ResourceSample]
 
     def summary(self) -> dict:
         lats = sorted(self.latencies_ms)
@@ -82,6 +93,43 @@ class StressStats:
             "max_ms": round(lats[-1], 1) if n else 0,
             "error_rate": round(self.failed / self.total * 100, 1) if self.total else 0,
             "elapsed_s": round(elapsed, 1),
+            "resources": self._resource_summary(),
+        }
+
+    def _resource_summary(self) -> dict:
+        samples = self.resource_samples
+        if not samples:
+            return {}
+        cpu_vals = [s.cpu_pct for s in samples]
+        ram_vals = [s.ram_mb for s in samples]
+        ram_pct_vals = [s.ram_pct for s in samples]
+        peak_users = max(s.active_users for s in samples)
+        avg_users = round(sum(s.active_users for s in samples) / len(samples), 1)
+        avg_cpu = round(sum(cpu_vals) / len(cpu_vals), 1)
+        peak_cpu = round(max(cpu_vals), 1)
+        avg_ram = round(sum(ram_vals) / len(ram_vals), 1)
+        peak_ram = round(max(ram_vals), 1)
+        avg_ram_pct = round(sum(ram_pct_vals) / len(ram_pct_vals), 1)
+        peak_ram_pct = round(max(ram_pct_vals), 1)
+        # Per-session estimations (at peak load)
+        peak_cpu_per_session = round(peak_cpu / peak_users, 2) if peak_users else 0
+        peak_ram_per_session = round(peak_ram / peak_users, 1) if peak_users else 0
+        timeline = [
+            {"t": round(s.timestamp - self.start_time, 1), "cpu": s.cpu_pct, "ram_mb": s.ram_mb, "users": s.active_users}
+            for s in samples
+        ]
+        return {
+            "avg_cpu_pct": avg_cpu,
+            "peak_cpu_pct": peak_cpu,
+            "avg_ram_mb": avg_ram,
+            "peak_ram_mb": peak_ram,
+            "avg_ram_pct": avg_ram_pct,
+            "peak_ram_pct": peak_ram_pct,
+            "peak_concurrent_users": peak_users,
+            "avg_concurrent_users": avg_users,
+            "per_session_cpu_pct": peak_cpu_per_session,
+            "per_session_ram_mb": peak_ram_per_session,
+            "timeline": timeline,
         }
 
 
@@ -158,6 +206,9 @@ class StressRunner:
 
         limits = httpx.Limits(max_connections=cfg.concurrent_users + 20, max_keepalive_connections=cfg.concurrent_users)
 
+        # Iniciar sampler de recursos en background
+        sampler_task = asyncio.create_task(self._sample_resources(end_time))
+
         async with httpx.AsyncClient(timeout=httpx.Timeout(60.0), limits=limits) as client:
             tasks = set()
 
@@ -195,12 +246,31 @@ class StressRunner:
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
 
+        await sampler_task
+
         self.stats.end_time = time.time()
         self.stats.elapsed = self.stats.end_time - self.stats.start_time
         self.progress = 1.0
         self.active_users = 0
         if self.status == "running":
             self.status = "done"
+
+    async def _sample_resources(self, end_time: float):
+        """Muestrea CPU y RAM cada segundo durante la prueba."""
+        psutil.cpu_percent()  # primer llamado descartado (siempre 0.0)
+        while not self._stop_event.is_set() and time.time() < end_time:
+            await asyncio.sleep(1.0)
+            try:
+                vm = psutil.virtual_memory()
+                self.stats.resource_samples.append(ResourceSample(
+                    timestamp=time.time(),
+                    cpu_pct=psutil.cpu_percent(),
+                    ram_mb=round(vm.used / 1024 / 1024, 1),
+                    ram_pct=vm.percent,
+                    active_users=self.active_users,
+                ))
+            except Exception:
+                pass
 
     # ── Escenario REALISTA — un usuario completo ─────────────────────────────
 
