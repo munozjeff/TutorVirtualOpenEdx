@@ -45,6 +45,117 @@ ask_secret() {
 # ── 0. Banner ─────────────────────────────────────────────────────────────────
 banner
 
+# ── 0b. Detectar si ya está configurado ───────────────────────────────────────
+ENV_FILE_CHECK="$SCRIPT_DIR/backend/.env"
+if [[ -f "$ENV_FILE_CHECK" ]] && grep -q "BASE_URL=" "$ENV_FILE_CHECK" 2>/dev/null; then
+    EXISTING_URL=$(grep "^BASE_URL=" "$ENV_FILE_CHECK" | cut -d= -f2-)
+    EXISTING_AI=$(grep "^AI_PROVIDER=" "$ENV_FILE_CHECK" | cut -d= -f2-)
+    echo -e "  ${GREEN}✔ Configuración existente detectada:${NC}"
+    echo -e "  • Tutor URL: ${CYAN}${EXISTING_URL}${NC}"
+    echo -e "  • Proveedor IA: ${CYAN}${EXISTING_AI}${NC}"
+    echo ""
+    echo -e "  ${BOLD}¿Qué deseas hacer?${NC}"
+    echo -e "  ${BOLD}1)${NC} Usar config existente — solo (re)instalar deps y levantar servicios"
+    echo -e "  ${BOLD}2)${NC} Reconfigurar todo desde cero"
+    echo ""
+    ask "Elige (1/2)" "1"
+    if [[ "$REPLY" == "1" ]]; then
+        info "Usando configuración existente. Reinstalando deps y levantando servicios..."
+        # Leer puertos del .env existente
+        BACKEND_PORT=$(grep "^BACKEND_DEV_PORT=" "$ENV_FILE_CHECK" | cut -d= -f2-)
+        FRONTEND_PORT=$(grep "^FRONTEND_DEV_PORT=" "$ENV_FILE_CHECK" | cut -d= -f2-)
+        BACKEND_PORT="${BACKEND_PORT:-8000}"
+        FRONTEND_PORT="${FRONTEND_PORT:-5173}"
+        AI_PROVIDER=$(grep "^AI_PROVIDER=" "$ENV_FILE_CHECK" | cut -d= -f2-)
+
+        # Saltar al paso de dependencias directamente
+        mkdir -p "$SCRIPT_DIR/backend/data" "$SCRIPT_DIR/logs"
+
+        step "Verificando dependencias del sistema"
+        sudo apt-get update -q 2>/dev/null
+        install_if_missing libnss3-tools certutil
+        install_if_missing wget wget
+        install_if_missing python3-pip pip3
+        install_if_missing nodejs node
+        if ! command -v docker &>/dev/null; then
+            err "Docker no encontrado. Instálalo con: curl -fsSL https://get.docker.com | sudo sh"
+        else
+            ok "Docker $(docker --version | cut -d' ' -f3 | tr -d ',')"
+        fi
+
+        step "Verificando dependencias Python (venv)"
+        VENV="$SCRIPT_DIR/backend/venv"
+        if [[ ! -d "$VENV" ]]; then
+            python3 -m venv "$VENV"
+            ok "venv creado"
+        else
+            ok "venv ya existe"
+        fi
+        "$VENV/bin/pip" install -q -r "$SCRIPT_DIR/backend/requirements.txt"
+        ok "Dependencias Python listas"
+
+        step "Verificando dependencias Node.js"
+        if [[ ! -d "$SCRIPT_DIR/frontend/node_modules" ]]; then
+            npm install --prefix "$SCRIPT_DIR/frontend" --silent
+            ok "node_modules instalado"
+        else
+            ok "node_modules ya existe"
+        fi
+
+        step "Levantando proxy nginx con Docker"
+        cd "$SCRIPT_DIR"
+        docker compose down --remove-orphans 2>/dev/null || true
+        docker compose up -d
+        ok "Proxy nginx corriendo"
+
+        step "Lanzando backend FastAPI"
+        LOG_DIR="$SCRIPT_DIR/logs"
+        pkill -f "uvicorn app.main:app" 2>/dev/null || true
+        sleep 1
+        cd "$SCRIPT_DIR/backend"
+        nohup "$VENV/bin/uvicorn" app.main:app \
+            --host 0.0.0.0 --port "$BACKEND_PORT" --reload \
+            > "$LOG_DIR/backend.log" 2>&1 &
+        echo "$!" > "$LOG_DIR/backend.pid"
+        ok "Backend lanzado → logs/backend.log"
+
+        step "Lanzando frontend Vite"
+        pkill -f "vite" 2>/dev/null || true
+        sleep 1
+        cd "$SCRIPT_DIR/frontend"
+        nohup npm run dev -- --host 0.0.0.0 --port "$FRONTEND_PORT" \
+            > "$LOG_DIR/frontend.log" 2>&1 &
+        echo "$!" > "$LOG_DIR/frontend.pid"
+        ok "Frontend lanzado → logs/frontend.log"
+
+        sleep 4
+        TUTOR_BASE_URL="$EXISTING_URL"
+        check_service() {
+            local name="$1" url="$2"
+            curl -sk --max-time 5 "$url" > /dev/null 2>&1 \
+                && ok "$name responde" || warn "$name aún iniciando (puede tardar unos segundos)"
+        }
+        check_service "Backend"  "http://localhost:$BACKEND_PORT/api/health"
+        check_service "Frontend" "http://localhost:$FRONTEND_PORT"
+        check_service "Proxy"    "${TUTOR_BASE_URL}/api/health"
+
+        echo ""
+        echo -e "${CYAN}${BOLD}╔══════════════════════════════════════════════════════════════╗${NC}"
+        echo -e "${CYAN}${BOLD}║                    ✅  SERVICIOS ACTIVOS                     ║${NC}"
+        echo -e "${CYAN}${BOLD}╚══════════════════════════════════════════════════════════════╝${NC}"
+        echo ""
+        echo -e "  ${GREEN}🌐 Tutor:${NC}       ${TUTOR_BASE_URL}"
+        echo -e "  ${GREEN}🔧 Admin:${NC}        ${TUTOR_BASE_URL}/?admin=1"
+        echo -e "  ${GREEN}📋 API Docs:${NC}     http://localhost:$BACKEND_PORT/docs"
+        echo ""
+        echo -e "  ${BOLD}Para detener:${NC} $SCRIPT_DIR/stop.sh"
+        echo -e "  ${BOLD}Para solo arrancar la próxima vez:${NC} $SCRIPT_DIR/start.sh"
+        echo ""
+        exit 0
+    fi
+    echo ""
+fi
+
 # ── 1. Selección de modo ──────────────────────────────────────────────────────
 step "Modo de instalación"
 echo ""
@@ -458,11 +569,19 @@ OLLAMA_MODEL=${OLLAMA_MODEL}
 # ─── CORS / Frontend ─────────────────────────────────────────────────────────
 FRONTEND_URL=${TUTOR_BASE_URL}
 ALLOWED_ORIGINS=${ALLOWED}
+
+# ─── Puertos locales de desarrollo (usados por start.sh) ─────────────────────
+BACKEND_DEV_PORT=${BACKEND_PORT}
+FRONTEND_DEV_PORT=${FRONTEND_PORT}
 ENV
 
 ok "backend/.env escrito"
 
-# ── 11. Instalar dependencias Python ──────────────────────────────────────────
+# ── 11. Crear directorios necesarios ─────────────────────────────────────────
+mkdir -p "$SCRIPT_DIR/backend/data" "$SCRIPT_DIR/logs"
+ok "Directorios data/ y logs/ listos"
+
+# ── 12. Instalar dependencias Python ──────────────────────────────────────────
 step "Verificando dependencias Python (venv)"
 VENV="$SCRIPT_DIR/backend/venv"
 if [[ ! -d "$VENV" ]]; then
