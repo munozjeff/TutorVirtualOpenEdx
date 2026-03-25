@@ -1,0 +1,55 @@
+services:
+
+  # ── Backend FastAPI ──────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: tutor_backend
+    env_file: ./backend/.env
+    volumes:
+      - tutor_data:/app/data          # base de datos + claves LTI persistentes
+    restart: unless-stopped
+    networks:
+      - tutor_net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  # ── Frontend React (bundle estático via nginx interno) ───────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: tutor_frontend
+    restart: unless-stopped
+    networks:
+      - tutor_net
+
+  # ── Proxy nginx (SSL + routing) ───────────────────────────────────────────────
+  proxy:
+    image: nginx:alpine
+    container_name: tutor_proxy
+    ports:
+      - "${PROXY_HTTP_PORT:-80}:80"
+      - "${PROXY_HTTPS_PORT:-443}:443"
+    volumes:
+      - ./nginx/tutor_prod.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+    depends_on:
+      - backend
+      - frontend
+    restart: unless-stopped
+    networks:
+      - tutor_net
+
+volumes:
+  tutor_data:
+    driver: local
+
+networks:
+  tutor_net:
+    driver: bridge
