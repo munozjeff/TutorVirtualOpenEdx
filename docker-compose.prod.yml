@@ -12,6 +12,12 @@ services:
     restart: unless-stopped
     networks:
       - tutor_net
+    # Permite que el contenedor resuelva los dominios de Open edX
+    # que en el host apuntan a 127.0.0.1 via /etc/hosts
+    extra_hosts:
+      - "local.openedx.io:host-gateway"
+      - "apps.local.openedx.io:host-gateway"
+      - "studio.local.openedx.io:host-gateway"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
       interval: 30s
