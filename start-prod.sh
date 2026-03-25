@@ -57,14 +57,26 @@ echo -e "  ${BOLD}Configuración:${NC}"
 echo -e "  • Tutor URL:    ${CYAN}${TUTOR_BASE_URL}${NC}"
 echo -e "  • Proveedor IA: ${CYAN}${AI_PROVIDER}${NC}"
 
-# ── Detener contenedores previos si están corriendo ───────────────────────────
-step "Verificando contenedores previos"
-RUNNING=$(docker compose -f "$COMPOSE_FILE" ps --status running --quiet 2>/dev/null | wc -l)
-if [[ "$RUNNING" -gt 0 ]]; then
-    info "Deteniendo contenedores activos..."
-    docker compose -f "$COMPOSE_FILE" down --remove-orphans
+# ── Detener cualquier stack Docker activo (dev y prod) ───────────────────────
+step "Liberando puertos"
+
+# Detener stack de desarrollo (docker-compose.yml) si está corriendo
+if docker compose -f "$SCRIPT_DIR/docker-compose.yml" ps --quiet 2>/dev/null | grep -q .; then
+    info "Deteniendo stack de desarrollo..."
+    docker compose -f "$SCRIPT_DIR/docker-compose.yml" down --remove-orphans 2>/dev/null || true
 fi
-ok "Limpio"
+
+# Detener stack de producción anterior si está corriendo
+if docker compose -f "$COMPOSE_FILE" ps --quiet 2>/dev/null | grep -q .; then
+    info "Deteniendo stack de producción anterior..."
+    docker compose -f "$COMPOSE_FILE" down --remove-orphans 2>/dev/null || true
+fi
+
+# Detener procesos de desarrollo en host (backend/frontend) por si acaso
+pkill -f "uvicorn app.main:app" 2>/dev/null && info "Backend dev detenido" || true
+pkill -f "vite" 2>/dev/null && info "Frontend dev detenido" || true
+
+ok "Puertos liberados"
 
 # ── Levantar stack ────────────────────────────────────────────────────────────
 step "Levantando stack de producción"
