@@ -42,23 +42,21 @@ command -v docker &>/dev/null || err "Docker no disponible"
 TUTOR_BASE_URL=$(grep "^BASE_URL=" "$ENV_FILE" | cut -d= -f2-)
 TUTOR_HOST=$(echo "$TUTOR_BASE_URL" | sed 's|https\?://||' | cut -d: -f1)
 TUTOR_SCHEME=$(echo "$TUTOR_BASE_URL" | cut -d: -f1)
-TUTOR_PORT=$(echo "$TUTOR_BASE_URL" | grep -oP ':\K\d+$' || echo "")
 AI_PROVIDER=$(grep "^AI_PROVIDER=" "$ENV_FILE" | cut -d= -f2-)
-BACKEND_PORT=$(grep "^BACKEND_DEV_PORT=" "$ENV_FILE" | cut -d= -f2- || echo "8000")
 
-# Puerto por defecto si no está en la URL
-[[ -z "$TUTOR_PORT" ]] && { [[ "$TUTOR_SCHEME" == "https" ]] && TUTOR_PORT=443 || TUTOR_PORT=80; }
+# Leer puertos del .env (escritos por setup.sh)
+PROXY_HTTPS_PORT=$(grep "^PROXY_HTTPS_PORT=" "$ENV_FILE" | cut -d= -f2-)
+PROXY_HTTP_PORT=$(grep "^PROXY_HTTP_PORT=" "$ENV_FILE" | cut -d= -f2-)
 
-# Determinar si HTTP o HTTPS
+# Fallback si no están en .env
+[[ -z "$PROXY_HTTPS_PORT" ]] && { [[ "$TUTOR_SCHEME" == "https" ]] && PROXY_HTTPS_PORT=4443 || PROXY_HTTPS_PORT=443; }
+[[ -z "$PROXY_HTTP_PORT" ]]  && PROXY_HTTP_PORT=8001
+
 if [[ "$TUTOR_SCHEME" == "https" ]]; then
-    PROXY_HTTP_PORT=80
-    PROXY_HTTPS_PORT="$TUTOR_PORT"
     CERT_FILE="$SCRIPT_DIR/nginx/certs/${TUTOR_HOST}.pem"
     KEY_FILE="$SCRIPT_DIR/nginx/certs/${TUTOR_HOST}-key.pem"
     USE_SSL=true
 else
-    PROXY_HTTP_PORT="$TUTOR_PORT"
-    PROXY_HTTPS_PORT=443
     USE_SSL=false
 fi
 

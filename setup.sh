@@ -573,6 +573,10 @@ ALLOWED_ORIGINS=${ALLOWED}
 # ─── Puertos locales de desarrollo (usados por start.sh) ─────────────────────
 BACKEND_DEV_PORT=${BACKEND_PORT}
 FRONTEND_DEV_PORT=${FRONTEND_PORT}
+
+# ─── Puertos del proxy (usados por deploy.sh / start-prod.sh) ────────────────
+PROXY_HTTPS_PORT=${TUTOR_PORT}
+PROXY_HTTP_PORT=${TUTOR_HTTP_PORT}
 ENV
 
 ok "backend/.env escrito"
