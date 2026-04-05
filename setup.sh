@@ -402,8 +402,8 @@ NGINX_CONF="$SCRIPT_DIR/nginx/tutor_proxy.conf"
 DOCKER_BRIDGE_IP=$(ip route show | grep docker0 | grep -oP 'src \K[\d.]+' 2>/dev/null || echo "172.17.0.1")
 info "IP bridge Docker detectada: $DOCKER_BRIDGE_IP"
 
-if [[ "$INSTALL_MODE" == "1" || "$INSTALL_MODE" == "3" ]]; then
-    # ── Config HTTPS ─────────────────────────────────────────────────────────
+if [[ "$INSTALL_MODE" == "1" ]]; then
+    # ── Config HTTPS modo 1 (dev — proxy a Vite) ─────────────────────────────
     cat > "$NGINX_CONF" <<NGINX
 # ── HTTP → redirige a HTTPS ──────────────────────────────────────────────────
 server {
@@ -421,8 +421,6 @@ server {
     ssl_certificate_key /etc/nginx/certs/$TUTOR_HOST-key.pem;
     ssl_protocols       TLSv1.2 TLSv1.3;
     ssl_ciphers         HIGH:!aNULL:!MD5;
-
-    # Sin X-Frame-Options: el tutor se carga en el iframe de Open edX
 
     location / {
         proxy_pass http://${DOCKER_BRIDGE_IP}:${FRONTEND_PORT};
@@ -486,6 +484,50 @@ server {
     }
 }
 NGINX
+
+elif [[ "$INSTALL_MODE" == "3" ]]; then
+    # ── Config HTTPS modo 3 (producción — archivos estáticos) ────────────────
+    cat > "$NGINX_CONF" <<NGINX
+# ── HTTP → redirige a HTTPS ──────────────────────────────────────────────────
+server {
+    listen 80;
+    server_name $TUTOR_HOST;
+    return 301 https://\$host:${TUTOR_PORT}\$request_uri;
+}
+
+# ── HTTPS producción ──────────────────────────────────────────────────────────
+server {
+    listen 443 ssl;
+    server_name $TUTOR_HOST;
+
+    ssl_certificate     /etc/nginx/certs/$TUTOR_HOST.pem;
+    ssl_certificate_key /etc/nginx/certs/$TUTOR_HOST-key.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+
+    # Frontend: archivos estáticos compilados (Vite build)
+    root /usr/share/nginx/html;
+    index index.html;
+
+    location / {
+        try_files \$uri \$uri/ /index.html;
+    }
+
+    location /api/ {
+        proxy_pass http://${DOCKER_BRIDGE_IP}:${BACKEND_PORT};
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+
+    location /lti/ {
+        proxy_pass http://${DOCKER_BRIDGE_IP}:${BACKEND_PORT};
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+}
+NGINX
 fi
 
 ok "nginx config generada"
@@ -501,7 +543,8 @@ elif [[ "$INSTALL_MODE" == "2" ]]; then
     COMPOSE_VOLUMES="      - ./nginx/tutor_proxy.conf:/etc/nginx/conf.d/default.conf:ro"
 elif [[ "$INSTALL_MODE" == "3" ]]; then
     COMPOSE_PORTS="      - \"${TUTOR_HTTP_PORT}:80\"\n      - \"${TUTOR_PORT}:443\""
-    COMPOSE_VOLUMES="      - ./nginx/tutor_proxy.conf:/etc/nginx/conf.d/default.conf:ro\n      - ./nginx/certs:/etc/nginx/certs:ro"
+    # Modo 3: nginx sirve frontend/dist como archivos estáticos
+    COMPOSE_VOLUMES="      - ./nginx/tutor_proxy.conf:/etc/nginx/conf.d/default.conf:ro\n      - ./nginx/certs:/etc/nginx/certs:ro\n      - ./frontend/dist:/usr/share/nginx/html:ro"
 fi
 
 cat > "$SCRIPT_DIR/docker-compose.yml" <<COMPOSE
@@ -599,7 +642,7 @@ info "Instalando/actualizando paquetes Python..."
 "$VENV/bin/pip" install -q -r "$SCRIPT_DIR/backend/requirements.txt"
 ok "Dependencias Python listas"
 
-# ── 12. Instalar dependencias Node ────────────────────────────────────────────
+# ── 12. Instalar dependencias Node y compilar frontend ────────────────────────
 step "Verificando dependencias Node.js"
 if [[ ! -d "$SCRIPT_DIR/frontend/node_modules" ]]; then
     info "Ejecutando npm install..."
@@ -607,6 +650,12 @@ if [[ ! -d "$SCRIPT_DIR/frontend/node_modules" ]]; then
     ok "node_modules instalado"
 else
     ok "node_modules ya existe"
+fi
+
+if [[ "$INSTALL_MODE" == "3" ]]; then
+    step "Compilando frontend para producción (npm run build)"
+    npm run build --prefix "$SCRIPT_DIR/frontend"
+    ok "Frontend compilado en frontend/dist/"
 fi
 
 # ── 13. Levantar proxy nginx (Docker) ─────────────────────────────────────────
@@ -625,26 +674,40 @@ pkill -f "uvicorn app.main:app" 2>/dev/null || true
 sleep 1
 
 cd "$SCRIPT_DIR/backend"
-nohup "$VENV/bin/uvicorn" app.main:app \
-    --host 0.0.0.0 \
-    --port "$BACKEND_PORT" \
-    --reload \
-    > "$LOG_DIR/backend.log" 2>&1 &
+if [[ "$INSTALL_MODE" == "3" ]]; then
+    # Producción: 2 workers, sin hot-reload
+    nohup "$VENV/bin/uvicorn" app.main:app \
+        --host 0.0.0.0 \
+        --port "$BACKEND_PORT" \
+        --workers 2 \
+        > "$LOG_DIR/backend.log" 2>&1 &
+else
+    # Desarrollo: 1 worker con hot-reload
+    nohup "$VENV/bin/uvicorn" app.main:app \
+        --host 0.0.0.0 \
+        --port "$BACKEND_PORT" \
+        --reload \
+        > "$LOG_DIR/backend.log" 2>&1 &
+fi
 BACKEND_PID=$!
 echo "$BACKEND_PID" > "$LOG_DIR/backend.pid"
 ok "Backend PID $BACKEND_PID → log: logs/backend.log"
 
-# ── 15. Lanzar frontend ───────────────────────────────────────────────────────
-step "Lanzando frontend Vite"
-pkill -f "vite" 2>/dev/null || true
-sleep 1
+# ── 15. Lanzar frontend (solo modos 1 y 2 — en modo 3 sirve nginx) ────────────
+if [[ "$INSTALL_MODE" != "3" ]]; then
+    step "Lanzando frontend Vite (desarrollo)"
+    pkill -f "vite" 2>/dev/null || true
+    sleep 1
 
-cd "$SCRIPT_DIR/frontend"
-nohup npm run dev -- --host 0.0.0.0 --port "$FRONTEND_PORT" \
-    > "$LOG_DIR/frontend.log" 2>&1 &
-FRONTEND_PID=$!
-echo "$FRONTEND_PID" > "$LOG_DIR/frontend.pid"
-ok "Frontend PID $FRONTEND_PID → log: logs/frontend.log"
+    cd "$SCRIPT_DIR/frontend"
+    nohup npm run dev -- --host 0.0.0.0 --port "$FRONTEND_PORT" \
+        > "$LOG_DIR/frontend.log" 2>&1 &
+    FRONTEND_PID=$!
+    echo "$FRONTEND_PID" > "$LOG_DIR/frontend.pid"
+    ok "Frontend PID $FRONTEND_PID → log: logs/frontend.log"
+else
+    ok "Frontend: archivos estáticos servidos por nginx (sin proceso Vite)"
+fi
 
 # ── 16. Verificar servicios ───────────────────────────────────────────────────
 step "Verificando que los servicios respondan..."
@@ -660,8 +723,9 @@ check_service() {
 }
 
 check_service "Backend"  "http://localhost:$BACKEND_PORT/api/health"
-check_service "Frontend" "http://localhost:$FRONTEND_PORT"
+[[ "$INSTALL_MODE" != "3" ]] && check_service "Frontend (Vite)" "http://localhost:$FRONTEND_PORT"
 check_service "Proxy"    "${TUTOR_BASE_URL}/api/health"
+check_service "Tutor"    "${TUTOR_BASE_URL}"
 
 # ── 17. Resumen final ─────────────────────────────────────────────────────────
 echo ""
