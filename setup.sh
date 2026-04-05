@@ -263,7 +263,9 @@ elif [[ "$INSTALL_MODE" == "3" ]]; then
     TUTOR_HOST="$REPLY"
     ask "Puerto HTTPS" "443"
     TUTOR_PORT="$REPLY"
-    TUTOR_HTTP_PORT="80"
+    warn "Si Open edX ya usa el puerto 80, elige otro (ej: 8080)."
+    ask "Puerto HTTP (redirección a HTTPS)" "80"
+    TUTOR_HTTP_PORT="$REPLY"
     TUTOR_SCHEME="https"
     APP_ENV="production"
     NEEDS_MKCERT=false
